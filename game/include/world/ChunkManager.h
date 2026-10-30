@@ -1,70 +1,93 @@
 #pragma once
 
 #include <world/ChunkData.h>
-#include <world/ChunkRenderer.h>
-#include <world/ChunkRef.h>
+#include <world/ChunkHolder.h>
 #include <world/WorldGen.h>
+#include <world/ChunkJobInbox.h>
+#include <world/ChunkSnapshot.h>
 #include <wv/core.h>
 #include <wv/pch.h>
 #define GLM_ENABLE_EXPERIMENTAL
 #include <glm/gtx/hash.hpp>
-#include <condition_variable>
 
 namespace ScuffedMinecraft
 {
 	class ChunkManager
 	{
 	public:
-		ChunkManager(WillowVox::Shader* shader, WillowVox::Camera* camera);
-		~ChunkManager();
+		ChunkManager(WillowVox::Shader* shader, WillowVox::Camera* camera, int threads);
 		
-		glm::ivec3 WorldToBlockPos(const glm::vec3& pos) const;
-		glm::ivec3 WorldToBlockPos(float x, float y, float z) const;
-		glm::ivec3 WorldToChunkId(const glm::vec3& pos) const;
-		glm::ivec3 WorldToChunkId(float x, float y, float z) const;
-		glm::ivec3 BlockToChunkId(const glm::ivec3& pos) const;
-		glm::ivec3 BlockToChunkId(int x, int y, int z) const;
+		// Requires chunk ID (Main thread only)
+		ChunkHolder* GetChunkHolder(const glm::ivec3& id);
+		ChunkData* GetChunkData(const glm::ivec3& id);
 
-		ChunkRef<ChunkData> GetChunkDataFromId(const glm::ivec3& id);
-		ChunkRef<ChunkData> GetChunkDataFromWorldPos(const glm::vec3& pos);
-		ChunkRef<ChunkData> GetChunkDataFromWorldPos(float x, float y, float z);
+		// Requires block pos (Main thread only)
+		BlockId GetBlockId(const glm::ivec3& blockPos);
+		BlockId GetBlockId(int bx, int by, int bz);
+
+		int GetLightLevel(const glm::ivec3& blockPos);
+		int GetLightLevel(int bx, int by, int bz);
+		int GetSkyLightLevel(const glm::ivec3& blockPos);
+		int GetSkyLightLevel(int bx, int by, int bz);
+
+		// Edits (Main thread only)
+		void SetBlock(int bx, int by, int bz, BlockId blockId);
+
+		void SetRenderDistance(int renderDistance, int renderHeight);
+		void SetSmoothLighting(bool smoothLighting);
 		
+		// Frame stuff
 		void Update();
 		void Render();
 
-		void ResetQueue();
-
-		int GetChunkRenderersSize();
+		// Helper getters (Main thread only)
+		int GetChunkHolderCount() const;
+		int GetChunkDataCount() const;
+		int GetChunkMeshCount() const;
 
 	private:
-		ChunkRef<ChunkData> GetOrCreateChunkData(const glm::ivec3& id);
+		bool IsInRenderDistance(const glm::ivec3& pos, const glm::ivec3& cam) const;
+		void UpdateChunkEnqueueCache();
+		void UpdateChunksWanted(const glm::ivec3& camChunk);
 
-		void ChunkThreadUpdate();
+		void MarkChunkDirty(ChunkHolder& holder);
 
-		std::unordered_map<glm::ivec3, ChunkRefOwner<ChunkData>> _chunkData;
-		std::shared_mutex _chunkDataMutex;
-		std::unordered_map<glm::ivec3, ChunkRefOwner<ChunkRenderer>> _chunkRenderers;
-		std::shared_mutex _chunkRenderersMutex;
+		void LightChunk(ChunkHolder* holder);
 
-		std::thread _chunkThread;
-		bool _chunkThreadShouldEnd = false;
-		std::mutex _chunkThreadMutex;
-		std::condition_variable _chunkThreadCv;
-
-		WillowVox::Shader* _shader;
-
-		// Only to be accessed by chunk thread
-		std::queue<glm::ivec3> _chunkQueue;
-		bool _chunkQueueShouldReset = true;
-		std::queue<glm::ivec3> _chunkRendererDeletionQueue;
-
-		WillowVox::Camera* _camera;
-		glm::ivec3 _lastCamChunk;
-		glm::ivec3 _currentCamChunk;
-
-		int _renderDistance = 5;
-		int _renderHeight = 2;
+		std::vector<ChunkHolder*> GetNeighboringChunks(const glm::ivec3& id);
+		std::shared_ptr<ChunkSnapshot> BuildSnapshot(ChunkHolder* holder, const std::vector<ChunkHolder*> neighbors);
+		
+		void SubmitGenerateChunkJob(int priority, ChunkHolder* holder);
+		void SubmitGenerateMeshJob(int priority, ChunkHolder* holder, const std::vector<ChunkHolder*> neighbors);
 
 		WorldGen _worldGen;
+
+		int _numThreads;
+		ChunkJobInbox _jobResultInbox;
+		WillowVox::PriorityJobPool _jobPool;
+
+		std::unordered_map<glm::ivec3, std::unique_ptr<ChunkHolder>> _chunks;
+		std::vector<glm::ivec3> _chunksWanted;
+
+		int _chunkKeepDistance = 10;
+		int _chunkKeepHeight = 4;
+		std::vector<glm::ivec3> _chunkEnqueueCache;
+		bool _smoothLighting = true;
+
+		WillowVox::Shader* _shader;
+		WillowVox::Renderer* _renderer;
+
+		WillowVox::Camera* _camera;
+		glm::ivec3 _lastCamChunk{ 10000 };
+		glm::ivec3 _currentCamChunk;
+
+		int _numChunkData = 0;
+		int _numChunkMeshes = 0;
+
+		uint64_t _currentToken;
+		int _genJobsInFlight = 0;
+		int _meshJobsInFlight = 0;
+		int _maxGenJobsInFlight;
+		int _maxMeshJobsInFlight;
 	};
 }

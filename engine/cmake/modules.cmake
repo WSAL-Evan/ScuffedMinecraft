@@ -65,3 +65,22 @@ target_link_libraries(${PROJECT_NAME} PRIVATE glfw)
 # Add STB Image
 _fetch_git_project_hash(STBImage https://github.com/nothings/stb.git 28d546d)
 target_include_directories(${PROJECT_NAME} PRIVATE ${stbimage_SOURCE_DIR})
+
+# Add Dear ImGui
+_fetch_git_project(imgui https://github.com/ocornut/imgui.git v1.92.9b)
+target_include_directories(${PROJECT_NAME} PUBLIC ${imgui_SOURCE_DIR})
+target_include_directories(${PROJECT_NAME} PRIVATE ${imgui_SOURCE_DIR}/backends)
+
+add_library(ImGui STATIC
+    ${imgui_SOURCE_DIR}/imgui.cpp
+    ${imgui_SOURCE_DIR}/imgui_draw.cpp
+    ${imgui_SOURCE_DIR}/imgui_tables.cpp
+    ${imgui_SOURCE_DIR}/imgui_widgets.cpp
+    ${imgui_SOURCE_DIR}/imgui_demo.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_glfw.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_vulkan.cpp
+)
+target_include_directories(ImGui PRIVATE ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends)
+target_link_libraries(ImGui PRIVATE Vulkan::Vulkan glfw)
+
+target_link_libraries(${PROJECT_NAME} PUBLIC ImGui)

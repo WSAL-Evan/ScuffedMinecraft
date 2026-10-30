@@ -11,6 +11,9 @@
 // Input
 #include <wv/input/Input.h>
 
+// Jobs
+#include <wv/jobs/PriorityJobPool.h>
+
 // Rendering
 #include <wv/rendering/Camera.h>
 #include <wv/rendering/Mesh.h>

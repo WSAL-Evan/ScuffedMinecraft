@@ -7,8 +7,10 @@ namespace ScuffedMinecraft
 	struct Block
 	{
 		std::string name;
+		bool emitsLight;
+		int lightLevel;
 
-		Block(const std::string& name)
-			: name(name) {}
+		Block(const std::string& name, bool emitsLight = false, int lightLevel = 0)
+			: name(name), emitsLight(emitsLight), lightLevel(lightLevel) {}
 	};
 }

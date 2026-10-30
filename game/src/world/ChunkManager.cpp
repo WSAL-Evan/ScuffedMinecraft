@@ -1,365 +1,429 @@
 #include <world/ChunkManager.h>
+#include <world/BlockRegistry.h>
+#include <world/VoxelLighting.h>
+#include <world/WorldCoords.h>
+#include <world/BuildChunkMesh.h>
 #include <algorithm>
 
 using namespace WillowVox;
 
 namespace ScuffedMinecraft
 {
-	ChunkManager::ChunkManager(Shader* shader, Camera* camera)
-		: _shader(shader), _camera(camera), _worldGen(0.0f, 10.0f, 100.0f, 5, 0.8f, 4.0f)
+	ChunkManager::ChunkManager(Shader* shader, Camera* camera, int threads)
+		: _shader(shader), _camera(camera), _numThreads(threads), _worldGen(0.0f, 10.0f, 100.0f, 2, 0.3f, 4.0f,
+			30.0f, 2, 0.25f, 3.0f, 0.8f), _jobPool(threads)
 	{
-		_chunkThread = std::thread(&ChunkManager::ChunkThreadUpdate, this);
+		_renderer = Renderer::GetInstance();
+
+		_maxGenJobsInFlight = 2 * threads;
+		_maxMeshJobsInFlight = 2 * threads;
+
+		UpdateChunkEnqueueCache();
 	}
 
-	ChunkManager::~ChunkManager()
+	ChunkHolder* ChunkManager::GetChunkHolder(const glm::ivec3& id)
 	{
-		_chunkThreadShouldEnd = true;
-		_chunkThreadCv.notify_one();
-		_chunkThread.join();
-	}
-
-	glm::ivec3 ChunkManager::WorldToBlockPos(const glm::vec3& pos) const
-	{
-		int blockX = pos.x < 0 ? std::floor(pos.x) : pos.x;
-		int blockY = pos.y < 0 ? std::floor(pos.y) : pos.y;
-		int blockZ = pos.z < 0 ? std::floor(pos.z) : pos.z;
-
-		return { blockX, blockY, blockZ };
-	}
-
-	glm::ivec3 ChunkManager::WorldToBlockPos(float x, float y, float z) const
-	{
-		int blockX = x < 0 ? std::floor(x) : x;
-		int blockY = y < 0 ? std::floor(y) : y;
-		int blockZ = z < 0 ? std::floor(z) : z;
-
-		return { blockX, blockY, blockZ };
-	}
-
-	glm::ivec3 ChunkManager::WorldToChunkId(const glm::vec3& pos) const
-	{
-		auto blockPos = WorldToBlockPos(pos);
-
-		int chunkX = blockPos.x < 0 ? std::floor(blockPos.x / (float)CHUNK_SIZE) : blockPos.x / (float)CHUNK_SIZE;
-		int chunkY = blockPos.y < 0 ? std::floor(blockPos.y / (float)CHUNK_SIZE) : blockPos.y / (float)CHUNK_SIZE;
-		int chunkZ = blockPos.z < 0 ? std::floor(blockPos.z / (float)CHUNK_SIZE) : blockPos.z / (float)CHUNK_SIZE;
-
-		return { chunkX, chunkY, chunkZ };
-	}
-
-	glm::ivec3 ChunkManager::WorldToChunkId(float x, float y, float z) const
-	{
-		auto blockPos = WorldToBlockPos(x, y, z);
-
-		int chunkX = blockPos.x < 0 ? std::floor(blockPos.x / (float)CHUNK_SIZE) : blockPos.x / (float)CHUNK_SIZE;
-		int chunkY = blockPos.y < 0 ? std::floor(blockPos.y / (float)CHUNK_SIZE) : blockPos.y / (float)CHUNK_SIZE;
-		int chunkZ = blockPos.z < 0 ? std::floor(blockPos.z / (float)CHUNK_SIZE) : blockPos.z / (float)CHUNK_SIZE;
-
-		return { chunkX, chunkY, chunkZ };
-	}
-
-	glm::ivec3 ChunkManager::BlockToChunkId(const glm::ivec3& pos) const
-	{
-		int chunkX = pos.x < 0 ? std::floor(pos.x / (float)CHUNK_SIZE) : pos.x / (float)CHUNK_SIZE;
-		int chunkY = pos.y < 0 ? std::floor(pos.y / (float)CHUNK_SIZE) : pos.y / (float)CHUNK_SIZE;
-		int chunkZ = pos.z < 0 ? std::floor(pos.z / (float)CHUNK_SIZE) : pos.z / (float)CHUNK_SIZE;
-
-		return { chunkX, chunkY, chunkZ };
-	}
-
-	glm::ivec3 ChunkManager::BlockToChunkId(int x, int y, int z) const
-	{
-		int chunkX = x < 0 ? std::floor(x / (float)CHUNK_SIZE) : x / (float)CHUNK_SIZE;
-		int chunkY = y < 0 ? std::floor(y / (float)CHUNK_SIZE) : y / (float)CHUNK_SIZE;
-		int chunkZ = z < 0 ? std::floor(z / (float)CHUNK_SIZE) : z / (float)CHUNK_SIZE;
-
-		return { chunkX, chunkY, chunkZ };
-	}
-
-	ChunkRef<ChunkData> ChunkManager::GetChunkDataFromId(const glm::ivec3& id)
-	{
-		std::shared_lock<std::shared_mutex> chunkDataLock(_chunkDataMutex);
-		if (_chunkData.find(id) != _chunkData.end())
-			return ChunkRef(&_chunkData[id]);
+		auto it = _chunks.find(id);
+		if (it != _chunks.end())
+			return it->second.get();
 
 		return nullptr;
 	}
 
-	ChunkRef<ChunkData> ChunkManager::GetChunkDataFromWorldPos(const glm::vec3& pos)
+	ChunkData* ChunkManager::GetChunkData(const glm::ivec3& id)
 	{
-		auto chunkId = WorldToChunkId(pos);
-		return GetChunkDataFromId(chunkId);
+		auto it = _chunks.find(id);
+		if (it != _chunks.end())
+			return it->second->data.get();
+
+		return nullptr;
 	}
 
-	ChunkRef<ChunkData> ChunkManager::GetChunkDataFromWorldPos(float x, float y, float z)
+	BlockId ChunkManager::GetBlockId(const glm::ivec3& blockPos)
 	{
-		auto chunkId = WorldToChunkId(x, y, z);
-		return GetChunkDataFromId(chunkId);
+		auto data = GetChunkData(BlockToChunkId(blockPos));
+		if (!data) return INVALID_BLOCK_POS;
+		return data->GetBlock(BlockToLocal(blockPos.x), BlockToLocal(blockPos.y), BlockToLocal(blockPos.z));
+	}
+
+	BlockId ChunkManager::GetBlockId(int bx, int by, int bz)
+	{
+		auto data = GetChunkData(BlockToChunkId(bx, by, bz));
+		if (!data) return INVALID_BLOCK_POS;
+		return data->GetBlock(BlockToLocal(bx), BlockToLocal(by), BlockToLocal(bz));
+	}
+
+	int ChunkManager::GetLightLevel(const glm::ivec3& blockPos)
+	{
+		auto data = GetChunkData(BlockToChunkId(blockPos.x, blockPos.y, blockPos.z));
+		if (!data) return 0;
+		return data->GetLightLevel(BlockToLocal(blockPos.x), BlockToLocal(blockPos.y), BlockToLocal(blockPos.z));
+	}
+
+	int ChunkManager::GetLightLevel(int bx, int by, int bz)
+	{
+		auto data = GetChunkData(BlockToChunkId(bx, by, bz));
+		if (!data) return 0;
+		return data->GetLightLevel(BlockToLocal(bx), BlockToLocal(by), BlockToLocal(bz));
+	}
+
+	int ChunkManager::GetSkyLightLevel(const glm::ivec3& blockPos)
+	{
+		auto data = GetChunkData(BlockToChunkId(blockPos.x, blockPos.y, blockPos.z));
+		if (!data) return 0;
+		return data->GetSkyLightLevel(BlockToLocal(blockPos.x), BlockToLocal(blockPos.y), BlockToLocal(blockPos.z));
+	}
+
+	int ChunkManager::GetSkyLightLevel(int bx, int by, int bz)
+	{
+		auto data = GetChunkData(BlockToChunkId(bx, by, bz));
+		if (!data) return 0;
+		return data->GetSkyLightLevel(BlockToLocal(bx), BlockToLocal(by), BlockToLocal(bz));
+	}
+
+	void ChunkManager::SetBlock(int bx, int by, int bz, BlockId blockId)
+	{
+		auto chunkHolder = GetChunkHolder(BlockToChunkId(bx, by, bz));
+		if (!chunkHolder || chunkHolder->stage < ChunkStage::Lit) return;
+
+		auto chunkData = chunkHolder->data.get();
+		auto localBlockPos = BlockToLocal(bx, by, bz);
+
+		BlockId oldBlock = chunkData->SetBlock(localBlockPos.x, localBlockPos.y, localBlockPos.z, blockId);
+		if (oldBlock == blockId) return;
+
+		std::vector<ChunkHolder*> chunksModified;
+		if (blockId == AIR)
+		{
+			auto block = BlockRegistry::GetInstance()->GetBlock(oldBlock);
+			if (block->emitsLight)
+				chunksModified = VoxelLighting::RemoveLightSource(this, chunkHolder, localBlockPos.x, localBlockPos.y, localBlockPos.z);
+			else
+				chunksModified = VoxelLighting::RemoveLightBlocker(this, chunkHolder, localBlockPos.x, localBlockPos.y, localBlockPos.z);
+
+			auto skyChunksModified = VoxelLighting::RemoveSkyLightBlocker(this, chunkHolder, localBlockPos.x, localBlockPos.y, localBlockPos.z);
+			for (auto& id : skyChunksModified)
+				chunksModified.push_back(id);
+		}
+		else
+		{
+			auto block = BlockRegistry::GetInstance()->GetBlock(blockId);
+			if (block->emitsLight)
+				chunksModified = VoxelLighting::AddLightSource(this, chunkHolder, localBlockPos.x, localBlockPos.y, localBlockPos.z, block->lightLevel);
+			else
+				chunksModified = VoxelLighting::AddLightBlocker(this, chunkHolder, localBlockPos.x, localBlockPos.y, localBlockPos.z);
+
+			auto skyChunksModified = VoxelLighting::AddSkyLightBlocker(this, chunkHolder, localBlockPos.x, localBlockPos.y, localBlockPos.z);
+			for (auto& id : skyChunksModified)
+				chunksModified.push_back(id);
+		}
+
+		for (auto& h : chunksModified)
+			MarkChunkDirty(*h);
+
+		if (!chunkHolder->mesh) _numChunkMeshes++;
+		chunkHolder->mesh = std::move(BuildChunkMesh(*BuildSnapshot(chunkHolder, GetNeighboringChunks(chunkHolder->id)), _smoothLighting));
+		chunkHolder->meshDirty = false;
+	}
+
+	void ChunkManager::SetRenderDistance(int renderDistance, int renderHeight)
+	{
+		_chunkKeepDistance = renderDistance + 2;
+		_chunkKeepHeight = renderHeight + 2;
+		_lastCamChunk += glm::ivec3(1000);
+		UpdateChunkEnqueueCache();
+	}
+
+	void ChunkManager::SetSmoothLighting(bool smoothLighting)
+	{
+		_smoothLighting = smoothLighting;
+		for (auto& [id, holder] : _chunks)
+			holder->meshDirty = true;
+	}
+
+	bool ChunkManager::IsInRenderDistance(const glm::ivec3& pos, const glm::ivec3& cam) const
+	{
+		glm::ivec3 dist = glm::abs(pos - cam);
+		return dist.x <= _chunkKeepDistance && dist.z <= _chunkKeepDistance && dist.y <= _chunkKeepHeight;
+	}
+
+	void ChunkManager::MarkChunkDirty(ChunkHolder& holder)
+	{
+		holder.meshDirty = true;
+		holder.dataVersion++;
+	}
+
+	void ChunkManager::LightChunk(ChunkHolder* holder)
+	{
+		auto chunksModified = VoxelLighting::CalculateFullLighting(this, holder);
+		for (auto h : chunksModified)
+		{
+			if (h)
+				MarkChunkDirty(*h);
+		}
+	}
+
+	void ChunkManager::UpdateChunkEnqueueCache()
+	{
+		_chunkEnqueueCache.clear();
+		// Adjust by 2 because there's always a 2 chunk border outside of chunk renderers
+		for (int x = -_chunkKeepDistance; x <= _chunkKeepDistance; x++)
+		{
+			for (int z = -_chunkKeepDistance; z <= _chunkKeepDistance; z++)
+			{
+				for (int y = -_chunkKeepHeight; y <= _chunkKeepHeight; y++)
+				{
+					_chunkEnqueueCache.push_back(glm::ivec3(x, y, z));
+				}
+			}
+		}
+
+		// Sort by distance
+		std::sort(_chunkEnqueueCache.begin(), _chunkEnqueueCache.end(), [&](const glm::ivec3& a, const glm::ivec3& b) {
+			glm::vec3 da = a - glm::ivec3(0), db = b - glm::ivec3(0);
+			return glm::dot(da, da) < glm::dot(db, db);
+		});
+	}
+
+	void ChunkManager::UpdateChunksWanted(const glm::ivec3& camChunk)
+	{
+		// Recreate chunks wanted
+		_chunksWanted.clear();
+		for (auto& c : _chunkEnqueueCache)
+		{
+			_chunksWanted.push_back(c + camChunk);
+		}
+
+		// Create new holders
+		for (auto& pos : _chunksWanted)
+		{
+			auto [it, inserted] = _chunks.try_emplace(pos);
+			if (inserted)
+				it->second = std::make_unique<ChunkHolder>(pos, ++_currentToken);
+		}
+
+		// Delete old holders that aren't wanted anymore
+		for (auto it = _chunks.begin(); it != _chunks.end();)
+		{
+			if (!IsInRenderDistance(it->first, camChunk))
+			{
+				if (it->second->data) _numChunkData--;
+				if (it->second->mesh) _numChunkMeshes--;
+				it = _chunks.erase(it);
+			}
+			else ++it;
+		}
+	}
+
+	std::vector<ChunkHolder*> ChunkManager::GetNeighboringChunks(const glm::ivec3& id)
+	{
+		std::vector<ChunkHolder*> neighbors(27);
+		int i = 0;
+		for (int z = id.z - 1; z <= id.z + 1; z++)
+			for (int x = id.x - 1; x <= id.x + 1; x++)
+				for (int y = id.y - 1; y <= id.y + 1; y++, i++)
+					neighbors[i] = GetChunkHolder({ x, y, z });
+
+		return neighbors;
+	}
+
+	std::shared_ptr<ChunkSnapshot> ChunkManager::BuildSnapshot(ChunkHolder* holder, const std::vector<ChunkHolder*> neighbors)
+	{
+		if (!holder->data) return nullptr;
+
+		ChunkSnapshot* snapshot = new ChunkSnapshot();
+		snapshot->id = holder->id;
+		snapshot->dataVersion = holder->dataVersion;
+
+		// Copy main chunk data
+		for (int z = 0; z < CHUNK_SIZE; z++)
+		{
+			for (int x = 0; x < CHUNK_SIZE; x++)
+			{
+				int src = ChunkData::Index(x, 0, z);
+				int dst = PadIndex(x, 0, z);
+				memcpy(&snapshot->blocks[dst], holder->data->GetData() + src, CHUNK_SIZE * sizeof(BlockId));
+				memcpy(&snapshot->light[dst], holder->data->GetLightData() + src, CHUNK_SIZE);
+			}
+		}
+
+		// Copy neighboring chunk data
+		for (int z = -1; z <= CHUNK_SIZE; z++)
+		{
+			for (int x = -1; x <= CHUNK_SIZE; x++)
+			{
+				for (int y = -1; y <= CHUNK_SIZE; y++)
+				{
+					glm::ivec3 pos(x, y, z);
+					auto c = BlockToChunkId(pos);
+					if (c == glm::ivec3(0)) { y = CHUNK_SIZE - 1; continue; } // Copied already
+					//LOG_INFO("%d. Chunk Stage: %d", (c.y + 1) + 3 * ((c.x + 1) + 3 * (c.z + 1)), neighbors[(c.y + 1) + 3 * ((c.x + 1) + 3 * (c.z + 1))]->stage);
+					ChunkData* data = neighbors[(c.y + 1) + 3 * ((c.x + 1) + 3 * (c.z + 1))]->data.get();
+					glm::ivec3 nPos = pos & CHUNK_MASK;
+					//LOG_INFO("%d %d %d, data?: %d", nPos.x, nPos.y, nPos.z, data != nullptr);
+					snapshot->blocks[PadIndex(x, y, z)] = data->GetBlock(nPos.x, nPos.y, nPos.z);
+					snapshot->light[PadIndex(x, y, z)] = data->GetRawLightLevel(nPos.x, nPos.y, nPos.z);
+				}
+			}
+		}
+
+		return std::shared_ptr<ChunkSnapshot>(snapshot);
+	}
+
+	void ChunkManager::SubmitGenerateChunkJob(int priority, ChunkHolder* holder)
+	{
+		holder->jobInFlight = true;
+		holder->stage = ChunkStage::Loading;
+		_genJobsInFlight++;
+		_jobPool.Submit(priority, [id = holder->id, token = holder->token, worldGen = &_worldGen, inbox = &_jobResultInbox] {
+			ChunkData* data = new ChunkData(id);
+			worldGen->GenerateChunk(id, data);
+			inbox->Push(std::move(ChunkDataResult(id, token, std::unique_ptr<ChunkData>(data))));
+		});
+	}
+
+	void ChunkManager::SubmitGenerateMeshJob(int priority, ChunkHolder* holder, const std::vector<ChunkHolder*> neighbors)
+	{
+		holder->jobInFlight = true;
+		_meshJobsInFlight++;
+		_jobPool.Submit(priority, [token = holder->token, snapshot = BuildSnapshot(holder, neighbors), inbox = &_jobResultInbox, smoothLighting = _smoothLighting] {
+			
+			std::unique_ptr<Mesh> mesh = BuildChunkMesh(*snapshot, smoothLighting);
+			inbox->Push(std::move(MeshResult(snapshot->id, token, snapshot->dataVersion, std::move(mesh))));
+		});
 	}
 
 	void ChunkManager::Update()
 	{
-		_currentCamChunk = WorldToChunkId(_camera->position);
+		// Rebuild chunks wanted if camera moved chunks
+		_currentCamChunk = BlockToChunkId(WorldToBlock(_camera->position));
 		if (_currentCamChunk != _lastCamChunk)
 		{
 			// Camera changed chunk
-			//LOG_INFO("Camera changed chunks");
 			_lastCamChunk = _currentCamChunk;
+			UpdateChunksWanted(_currentCamChunk);
+		}
 
+		// Process job results
+		auto results = _jobResultInbox.TakeAll();
+		for (auto& result : results)
+		{
+			if (auto* chunkDataResult = std::get_if<ChunkDataResult>(&result))
 			{
-				std::lock_guard lk(_chunkThreadMutex);
-				_chunkQueueShouldReset = true;
+				_genJobsInFlight--;
+				auto* holder = GetChunkHolder(chunkDataResult->id);
+
+				if (!holder || holder->stage != ChunkStage::Loading || holder->token != chunkDataResult->token) continue;
+
+				holder->data = std::move(chunkDataResult->data);
+				holder->stage = ChunkStage::Generated;
+				holder->jobInFlight = false;
+				_numChunkData++;
 			}
-			_chunkThreadCv.notify_one();
+			else if (auto* meshResult = std::get_if<MeshResult>(&result))
+			{
+				_meshJobsInFlight--;
+				auto* holder = GetChunkHolder(meshResult->id);
+
+				if (!holder || holder->token != meshResult->token) continue;
+
+				if (!holder->mesh) _numChunkMeshes++;
+				holder->mesh = std::move(meshResult->mesh);
+				holder->jobInFlight = false;
+				if (holder->dataVersion == meshResult->dataVersion)
+					holder->meshDirty = false;
+			}
+		}
+
+		// Work on building chunks wanted
+		auto lightingDeadline = std::chrono::steady_clock::now() + std::chrono::microseconds(6000);
+		bool lightingDone = false;
+		for (auto& pos : _chunksWanted)
+		{
+			if (lightingDone && _genJobsInFlight >= _maxGenJobsInFlight && _meshJobsInFlight >= _maxMeshJobsInFlight) break;
+
+			auto& holder = _chunks[pos];
+			if (holder->jobInFlight) continue;
+
+			if (_genJobsInFlight < _maxGenJobsInFlight && holder->stage == ChunkStage::Missing)
+			{
+				// Generate missing chunk data
+				SubmitGenerateChunkJob(1, holder.get());
+			}
+			else if (!lightingDone && holder->stage == ChunkStage::Generated)
+			{
+				// Light unlit chunk if chunks around it are at least generated
+				auto nxIt = _chunks.find(pos + glm::ivec3(-1, 0, 0));
+				auto pxIt = _chunks.find(pos + glm::ivec3(1, 0, 0));
+				auto nyIt = _chunks.find(pos + glm::ivec3(0, -1, 0));
+				auto pyIt = _chunks.find(pos + glm::ivec3(0, 1, 0));
+				auto nzIt = _chunks.find(pos + glm::ivec3(0, 0, -1));
+				auto pzIt = _chunks.find(pos + glm::ivec3(0, 0, 1));
+				if (nxIt != _chunks.end() && nxIt->second->stage >= ChunkStage::Generated &&
+					pxIt != _chunks.end() && pxIt->second->stage >= ChunkStage::Generated &&
+					nyIt != _chunks.end() && nyIt->second->stage >= ChunkStage::Generated &&
+					pyIt != _chunks.end() && pyIt->second->stage >= ChunkStage::Generated &&
+					nzIt != _chunks.end() && nzIt->second->stage >= ChunkStage::Generated &&
+					pzIt != _chunks.end() && pzIt->second->stage >= ChunkStage::Generated)
+				{
+					LightChunk(holder.get());
+					holder->stage = ChunkStage::Lit;
+					MarkChunkDirty(*holder);
+					MarkChunkDirty(*nxIt->second);
+					MarkChunkDirty(*pxIt->second);
+					MarkChunkDirty(*nyIt->second);
+					MarkChunkDirty(*pyIt->second);
+					MarkChunkDirty(*nzIt->second);
+					MarkChunkDirty(*pzIt->second);
+					if (std::chrono::steady_clock::now() >= lightingDeadline)
+						lightingDone = true;
+				}
+			}
+			else if (_meshJobsInFlight < _maxMeshJobsInFlight && holder->stage == ChunkStage::Lit && holder->meshDirty)
+			{
+				// Generate new mesh if chunks around it are lit
+				auto neighbors = GetNeighboringChunks(pos);
+				bool readyToMesh = true;
+				for (auto* n : neighbors)
+				{
+					if (!n || n->stage < ChunkStage::Lit)
+					{
+						readyToMesh = false;
+						break;
+					}
+				}
+				if (!readyToMesh) continue;
+
+				SubmitGenerateMeshJob(0, holder.get(), neighbors);
+			}
 		}
 	}
 
 	void ChunkManager::Render()
 	{
+		for (auto& [id, holder] : _chunks)
 		{
-			std::shared_lock<std::shared_mutex> chunkRendererLock(_chunkRenderersMutex);
-			for (auto& [id, renderer] : _chunkRenderers)
-				renderer->Render();
-		}
-	}
-
-	void ChunkManager::ResetQueue()
-	{
-		{
-			std::lock_guard lk(_chunkThreadMutex);
-			_chunkQueueShouldReset = true;
-		}
-		_chunkThreadCv.notify_one();
-	}
-
-	ChunkRef<ChunkData> ChunkManager::GetOrCreateChunkData(const glm::ivec3& id)
-	{
-		// Return it if it exists
-		{
-			std::shared_lock<std::shared_mutex> chunkDataLock(_chunkDataMutex);
-			if (_chunkData.find(id) != _chunkData.end())
-				return ChunkRef(&_chunkData[id]);
-		}
-
-		//LOG_INFO("Creating chunk data: %d %d %d", id.x, id.y, id.z);
-		
-		// It does not exist. Create a new one
-		ChunkData* data = new ChunkData();
-		_worldGen.GenerateChunk(id, data);
-
-		// Add to unordered map and return reference
-		std::unique_lock<std::shared_mutex> chunkDataModLock(_chunkDataMutex);
-		auto [it, inserted] = _chunkData.emplace(id, data);
-
-		//LOG_INFO("Chunk Data: %d", _chunkData.size());
-
-		return ChunkRef<ChunkData>(it->second);
-	}
-
-	void ChunkManager::ChunkThreadUpdate()
-	{
-		while (!_chunkThreadShouldEnd)
-		{
-			//LOG_INFO("Chunk queue count: %d", _chunkQueue.size());
-
-			// Delete chunk renderer out of render distance
-			if (!_chunkRendererDeletionQueue.empty())
+			if (holder->mesh)
 			{
-				auto id = _chunkRendererDeletionQueue.front();
-				_chunkRendererDeletionQueue.pop();
-				{
-					std::unique_lock<std::shared_mutex> chunkRendererLock(_chunkRenderersMutex);
-					auto it = _chunkRenderers.find(id);
-					if (it != _chunkRenderers.end() && it->second._refCount.load() == 0)
-					{
-						_chunkRenderers.erase(it);
-						//LOG_INFO("Deleted chunk renderer %d %d %d. Chunk Renderers: %d", id.x, id.y, id.z, _chunkRenderers.size());
-					}
-				}
-			}
-
-			// Delete unused chunk data
-			{
-				std::unique_lock<std::shared_mutex> chunkDataLock(_chunkDataMutex);
-				for (auto it = _chunkData.begin(); it != _chunkData.end();)
-				{
-					if (it->second._refCount.load() == 0)
-					{
-						//LOG_INFO("Deleting chunk data %d %d %d", it->first.x, it->first.y, it->first.z);
-						it = _chunkData.erase(it);
-						//LOG_INFO("Chunk Data: %d", _chunkData.size());
-					}
-					else
-						++it;
-				}
-			}
-
-			// Reset queue if camera moved to a different chunk
-			// or if the chunk queue was manually reset
-			bool queueShouldReset;
-			{
-				std::lock_guard lk(_chunkThreadMutex);
-				queueShouldReset = _chunkQueueShouldReset;
-			}
-			if (queueShouldReset)
-			{
-				//LOG_INFO("Resetting queue");
-				std::queue<glm::ivec3> newQueue;
-				std::swap(_chunkQueue, newQueue);
-
-				int chunkX = _currentCamChunk.x;
-				int chunkY = _currentCamChunk.y;
-				int chunkZ = _currentCamChunk.z;
-
-				_chunkQueue.push({ chunkX, chunkY, chunkZ });
-
-				for (int r = 0; r <= _renderDistance; r++)
-				{
-					// Add middle chunks
-					for (int y = 0; y <= _renderHeight; y++)
-					{
-						_chunkQueue.push({ chunkX,     chunkY + y, chunkZ + r });
-						_chunkQueue.push({ chunkX + r, chunkY + y, chunkZ });
-						_chunkQueue.push({ chunkX,     chunkY + y, chunkZ - r });
-						_chunkQueue.push({ chunkX - r, chunkY + y, chunkZ });
-
-						if (y > 0)
-						{
-							_chunkQueue.push({ chunkX,     chunkY - y, chunkZ + r });
-							_chunkQueue.push({ chunkX + r, chunkY - y, chunkZ });
-							_chunkQueue.push({ chunkX,     chunkY - y, chunkZ - r });
-							_chunkQueue.push({ chunkX - r, chunkY - y, chunkZ });
-						}
-					}
-
-					// Add edges
-					for (int e = 1; e < r; e++)
-					{
-						for (int y = 0; y <= _renderHeight; y++)
-						{
-							_chunkQueue.push({ chunkX + e, chunkY + y, chunkZ + r });
-							_chunkQueue.push({ chunkX - e, chunkY + y, chunkZ + r });
-
-							_chunkQueue.push({ chunkX + r, chunkY + y, chunkZ + e });
-							_chunkQueue.push({ chunkX + r, chunkY + y, chunkZ - e });
-
-							_chunkQueue.push({ chunkX + e, chunkY + y, chunkZ - r });
-							_chunkQueue.push({ chunkX - e, chunkY + y, chunkZ - r });
-
-							_chunkQueue.push({ chunkX - r, chunkY + y, chunkZ + e });
-							_chunkQueue.push({ chunkX - r, chunkY + y, chunkZ - e });
-
-							if (y > 0)
-							{
-								_chunkQueue.push({ chunkX + e, chunkY - y, chunkZ + r });
-								_chunkQueue.push({ chunkX - e, chunkY - y, chunkZ + r });
-
-								_chunkQueue.push({ chunkX + r, chunkY - y, chunkZ + e });
-								_chunkQueue.push({ chunkX + r, chunkY - y, chunkZ - e });
-
-								_chunkQueue.push({ chunkX + e, chunkY - y, chunkZ - r });
-								_chunkQueue.push({ chunkX - e, chunkY - y, chunkZ - r });
-
-								_chunkQueue.push({ chunkX - r, chunkY - y, chunkZ + e });
-								_chunkQueue.push({ chunkX - r, chunkY - y, chunkZ - e });
-							}
-						}
-					}
-
-					// Add corners
-					for (int y = 0; y <= _renderHeight; y++)
-					{
-						_chunkQueue.push({ chunkX + r, chunkY + y, chunkZ + r });
-						_chunkQueue.push({ chunkX + r, chunkY + y, chunkZ - r });
-						_chunkQueue.push({ chunkX - r, chunkY + y, chunkZ + r });
-						_chunkQueue.push({ chunkX - r, chunkY + y, chunkZ - r });
-
-						if (y > 0)
-						{
-							_chunkQueue.push({ chunkX + r, chunkY - y, chunkZ + r });
-							_chunkQueue.push({ chunkX + r, chunkY - y, chunkZ - r });
-							_chunkQueue.push({ chunkX - r, chunkY - y, chunkZ + r });
-							_chunkQueue.push({ chunkX - r, chunkY - y, chunkZ - r });
-						}
-					}
-				}
-
-				{
-					std::lock_guard lk(_chunkThreadMutex);
-					_chunkQueueShouldReset = false;
-				}
-
-				// Add chunk renderers out of render distance to deletion queue
-				while (!_chunkRendererDeletionQueue.empty())
-					_chunkRendererDeletionQueue.pop();
-				std::shared_lock<std::shared_mutex> chunkRendererLock(_chunkRenderersMutex);
-				for (auto& [id, renderer] : _chunkRenderers)
-				{
-					// Check if out of bounds of render distance
-					if (std::abs(id.x - _currentCamChunk.x) > _renderDistance ||
-						std::abs(id.z - _currentCamChunk.z) > _renderDistance ||
-						std::abs(id.y - _currentCamChunk.y) > _renderHeight)
-					{
-						_chunkRendererDeletionQueue.push(id);
-					}
-				}
-			}
-
-			// Create chunk renderer
-			if (_chunkQueue.size() > 0)
-			{
-				// Grab first chunk renderer that doesn't exist
-				glm::ivec3 chunkId;
-				bool newChunk = false;
-				while (_chunkQueue.size() > 0)
-				{
-					chunkId = _chunkQueue.front();
-					_chunkQueue.pop();
-
-					std::shared_lock<std::shared_mutex> chunkRendererReadLock(_chunkRenderersMutex);
-					if (_chunkRenderers.find(chunkId) == _chunkRenderers.end())
-					{
-						newChunk = true;
-						break;
-					}
-				}
-
-				if (!newChunk) continue;
-
-				//LOG_INFO("Creating chunk renderer for %d %d %d", chunkId.x, chunkId.y, chunkId.z);
-
-				auto data = GetOrCreateChunkData(chunkId);
-				auto northData = GetOrCreateChunkData({ chunkId.x, chunkId.y, chunkId.z - 1 });
-				auto southData = GetOrCreateChunkData({ chunkId.x, chunkId.y, chunkId.z + 1 });
-				auto eastData = GetOrCreateChunkData({ chunkId.x - 1, chunkId.y, chunkId.z });
-				auto westData = GetOrCreateChunkData({ chunkId.x + 1, chunkId.y, chunkId.z });
-				auto upData = GetOrCreateChunkData({ chunkId.x, chunkId.y + 1, chunkId.z });
-				auto downData = GetOrCreateChunkData({ chunkId.x, chunkId.y - 1, chunkId.z });
-
-				ChunkRenderer* renderer = new ChunkRenderer(chunkId, data, _shader, northData, southData,
-					eastData, westData, upData, downData);
-				renderer->CreateMesh();
-
-				std::unique_lock<std::shared_mutex> chunkRendererLock(_chunkRenderersMutex);
-				_chunkRenderers.emplace(chunkId, renderer);
-
-				//LOG_INFO("Chunk Renderers: %d", _chunkRenderers.size());
-			}
-			else if (_chunkRendererDeletionQueue.empty())
-			{
-				// Chunk queue empty. Wait until camera moves
-				//LOG_INFO("Chunk queue empty. Pausing...");
-				std::unique_lock lk(_chunkThreadMutex);
-				_chunkThreadCv.wait(lk, [this] {
-					return _chunkQueueShouldReset || _chunkThreadShouldEnd;
-				});
+				auto model = glm::translate(glm::mat4(1.0f), (glm::vec3)ChunkToBlock(id));
+				_renderer->UpdatePushConstants(*_shader, model);
+				_renderer->RenderMesh(*_shader, *holder->mesh);
 			}
 		}
 	}
 
-	int ChunkManager::GetChunkRenderersSize()
+	int ChunkManager::GetChunkHolderCount() const
 	{
-		std::shared_lock<std::shared_mutex> lock(_chunkRenderersMutex);
-		return _chunkRenderers.size();
+		return _chunks.size();
+	}
+
+	int ChunkManager::GetChunkDataCount() const
+	{
+		return _numChunkData;
+	}
+
+	int ChunkManager::GetChunkMeshCount() const
+	{
+		return _numChunkMeshes;
 	}
 }

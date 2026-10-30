@@ -13,6 +13,8 @@ add_library(WillowVox STATIC
 
     ${CMAKE_CURRENT_SOURCE_DIR}/src/input/Input.cpp
 
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/jobs/PriorityJobPool.cpp
+
     ${CMAKE_CURRENT_SOURCE_DIR}/src/rendering/Camera.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/rendering/Mesh.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/rendering/Renderer.cpp

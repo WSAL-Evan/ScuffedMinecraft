@@ -3,6 +3,7 @@
 #include <wv/rendering/Window.h>
 #include <wv/input/OpenGLKey.h>
 #include <GLFW/glfw3.h>
+#include <imgui.h>
 
 namespace WillowVox
 {
@@ -114,16 +115,20 @@ namespace WillowVox
 
     void Input::SetMouseMode(MouseMode mode)
     {
+        ImGuiIO& io = ImGui::GetIO();
         switch (mode)
         {
         case MouseMode::NORMAL:
             glfwSetInputMode(static_cast<GLFWwindow*>(_window->GetNativeWindow()), GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+            io.ConfigFlags &= ~ImGuiConfigFlags_NoMouse;
             break;
         case MouseMode::DISABLED:
             glfwSetInputMode(static_cast<GLFWwindow*>(_window->GetNativeWindow()), GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+            io.ConfigFlags |= ImGuiConfigFlags_NoMouse;
             break;
         case MouseMode::HIDDEN:
             glfwSetInputMode(static_cast<GLFWwindow*>(_window->GetNativeWindow()), GLFW_CURSOR, GLFW_CURSOR_HIDDEN);
+            io.ConfigFlags &= ~ImGuiConfigFlags_NoMouse;
             break;
         }
     }

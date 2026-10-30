@@ -28,3 +28,9 @@ set(FASTNOISE2_NOISETOOL OFF CACHE BOOL "Build Noise Tool" FORCE)
 _fetch_git_project(FastNoise https://github.com/Auburn/FastNoise2.git v1.1.1)
 target_link_libraries(${PROJECT_NAME} PRIVATE FastNoise)
 target_include_directories(${PROJECT_NAME} PRIVATE ${fastnoise_SOURCE_DIR})
+
+# Add Physical CPU Count
+set(fortran FALSE)
+_fetch_git_project(pcc https://github.com/scivision/physical-cpu-count.git v1.0.3)
+target_include_directories(${PROJECT_NAME} PRIVATE ${pcc_SOURCE_DIR}/src)
+target_link_libraries(${PROJECT_NAME} PRIVATE cpu_count)

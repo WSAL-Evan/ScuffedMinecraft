@@ -6,8 +6,10 @@
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
 
-#define VMA_STATIC_VULKAN_FUNCTIONS 0
-#define VMA_DYNAMIC_VULKAN_FUNCTIONS 1
+#include <imgui.h>
+#include <imgui_impl_glfw.h>
+#include <imgui_impl_vulkan.h>
+
 #include <vk_mem_alloc.h>
 
 #define STB_IMAGE_IMPLEMENTATION
@@ -30,7 +32,7 @@ constexpr bool enableValidationLayers = true;
 
 constexpr int MAX_FRAMES_IN_FLIGHT = 2;
 
-std::vector<const char*> requiredDeviceExtensions = { vk::KHRSwapchainExtensionName };
+std::vector<const char*> requiredDeviceExtensions = { vk::KHRSwapchainExtensionName, vk::EXTMemoryBudgetExtensionName };
 
 namespace WillowVox
 {
@@ -48,53 +50,6 @@ namespace WillowVox
             {.location = 1, .binding = 0, .format = vk::Format::eR32G32Sfloat, .offset = offsetof(Vertex, texCoord)}
         } };
     }
-
-    const std::vector<Vertex> vertices = {
-        // North Face
-        { {  0.5f, -0.5f, -0.5f }, { 0.0f, 0.0f } },
-        { { -0.5f, -0.5f, -0.5f }, { 1.0f, 0.0f } },
-        { {  0.5f,  0.5f, -0.5f }, { 0.0f, 1.0f } },
-        { { -0.5f,  0.5f, -0.5f }, { 1.0f, 1.0f } },
-
-        // South Face
-        { { -0.5f, -0.5f,  0.5f }, { 0.0f, 0.0f } },
-        { {  0.5f, -0.5f,  0.5f }, { 1.0f, 0.0f } },
-        { { -0.5f,  0.5f,  0.5f }, { 0.0f, 1.0f } },
-        { {  0.5f,  0.5f,  0.5f }, { 1.0f, 1.0f } },
-
-        // East Face
-        { { -0.5f, -0.5f, -0.5f }, { 0.0f, 0.0f } },
-        { { -0.5f, -0.5f,  0.5f }, { 1.0f, 0.0f } },
-        { { -0.5f,  0.5f, -0.5f }, { 0.0f, 1.0f } },
-        { { -0.5f,  0.5f,  0.5f }, { 1.0f, 1.0f } },
-
-        // West Face
-        { {  0.5f, -0.5f,  0.5f }, { 0.0f, 0.0f } },
-        { {  0.5f, -0.5f, -0.5f }, { 1.0f, 0.0f } },
-        { {  0.5f,  0.5f,  0.5f }, { 0.0f, 1.0f } },
-        { {  0.5f,  0.5f, -0.5f }, { 1.0f, 1.0f } },
-
-        // Bottom Face
-        { { -0.5f, -0.5f, -0.5f }, { 0.0f, 0.0f } },
-        { {  0.5f, -0.5f, -0.5f }, { 1.0f, 0.0f } },
-        { { -0.5f, -0.5f,  0.5f }, { 0.0f, 1.0f } },
-        { {  0.5f, -0.5f,  0.5f }, { 1.0f, 1.0f } },
-
-        // Top Face
-        { { -0.5f,  0.5f,  0.5f }, { 0.0f, 0.0f } },
-        { {  0.5f,  0.5f,  0.5f }, { 1.0f, 0.0f } },
-        { { -0.5f,  0.5f, -0.5f }, { 0.0f, 1.0f } },
-        { {  0.5f,  0.5f, -0.5f }, { 1.0f, 1.0f } },
-    };
-
-    const std::vector<uint16_t> indices = {
-        0, 2, 1, 1, 2, 3,
-        4, 6, 5, 5, 6, 7,
-        8, 10, 9, 9, 10, 11,
-        12, 14, 13, 13, 14, 15,
-        16, 18, 17, 17, 18, 19,
-        20, 22, 21, 21, 22, 23
-    };
 
     struct UniformBufferObject
     {
@@ -226,6 +181,8 @@ namespace WillowVox
         void CreateCommandBuffers();
         void CreateSyncObjects();
 
+        void InitImGui();
+
         // Render functions
         void TransitionSwapChainImageLayout(vk::Image image, vk::ImageLayout oldLayout, vk::ImageLayout newLayout, vk::AccessFlags2 srcAccessMask, vk::AccessFlags2 dstAccessMask, vk::PipelineStageFlags2 srcStageMask, vk::PipelineStageFlags2 dstStageMask, vk::ImageAspectFlags imageAspectFlags);
         void StartRecordCommandBuffer(uint32_t imageIndex);
@@ -268,6 +225,8 @@ namespace WillowVox
         _impl->CreateDescriptorSets();
         _impl->CreateCommandBuffers();
         _impl->CreateSyncObjects();
+
+        _impl->InitImGui();
 
         LOG_SUCCESS("Successfully initialized renderer");
     }
@@ -473,7 +432,7 @@ namespace WillowVox
 
         VmaAllocatorCreateInfo allocatorCreateInfo = {};
         allocatorCreateInfo.flags = VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT;
-        allocatorCreateInfo.vulkanApiVersion = VK_API_VERSION_1_2;
+        allocatorCreateInfo.vulkanApiVersion = VK_API_VERSION_1_3;
         allocatorCreateInfo.physicalDevice = physicalDevice;
         allocatorCreateInfo.device = device;
         allocatorCreateInfo.instance = instance;
@@ -1100,7 +1059,40 @@ namespace WillowVox
         LOG_INFO("Sync objects created");
     }
 
-    void Renderer::BeginRendering()
+    void Renderer::Impl::InitImGui()
+    {
+        ImGui::CreateContext();
+
+        ImGui_ImplGlfw_InitForVulkan(static_cast<GLFWwindow*>(window->GetNativeWindow()), true);
+
+        ImGui_ImplVulkan_InitInfo initInfo = {};
+        initInfo.Instance = instance;
+        initInfo.PhysicalDevice = physicalDevice;
+        initInfo.Device = device;
+        initInfo.QueueFamily = queueIndex;
+        initInfo.Queue = queue;
+        initInfo.DescriptorPoolSize = 8;
+        initInfo.MinImageCount = 2;
+        initInfo.ImageCount = MAX_FRAMES_IN_FLIGHT;
+        initInfo.ApiVersion = VK_API_VERSION_1_3;
+        initInfo.UseDynamicRendering = true;
+
+        ImGui_ImplVulkan_PipelineInfo pipelineInfo = {};
+        pipelineInfo.PipelineRenderingCreateInfo = {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR,
+            .colorAttachmentCount = 1,
+            .pColorAttachmentFormats = reinterpret_cast<const VkFormat*>(&swapChainSurfaceFormat.format),
+            .depthAttachmentFormat = static_cast<VkFormat>(FindDepthFormat(physicalDevice)),
+            .stencilAttachmentFormat = VK_FORMAT_UNDEFINED
+        };
+        initInfo.PipelineInfoMain = pipelineInfo;
+
+        ImGui_ImplVulkan_Init(&initInfo);
+
+        LOG_INFO("ImGui Initialized");
+    }
+
+    bool Renderer::BeginRendering()
     {
         uint32_t newFrameIndex = (_impl->frameIndex.load() + 1) % MAX_FRAMES_IN_FLIGHT;
         auto fenceResult = _impl->device.waitForFences(_impl->drawFences[newFrameIndex], vk::True, UINT64_MAX);
@@ -1117,7 +1109,7 @@ namespace WillowVox
         if (result == vk::Result::eErrorOutOfDateKHR)
         {
             _impl->RecreateSwapChain();
-            return;
+            return false;
         }
         if (result != vk::Result::eSuccess && result != vk::Result::eSuboptimalKHR)
         {
@@ -1129,10 +1121,27 @@ namespace WillowVox
 
         _impl->renderCommandBuffers[_impl->frameIndex.load()].reset();
         _impl->StartRecordCommandBuffer(imageIndex);
+
+        return true;
+    }
+
+    void Renderer::BeginUI()
+    {
+        ImGui_ImplVulkan_NewFrame();
+        ImGui_ImplGlfw_NewFrame();
+        ImGui::NewFrame();
     }
 
     void Renderer::EndRendering()
     {
+        ImGui::Render();
+        ImDrawData* drawData = ImGui::GetDrawData();
+
+        {
+            std::lock_guard<std::mutex> lock(_impl->queueMutex);
+            ImGui_ImplVulkan_RenderDrawData(drawData, _impl->renderCommandBuffers[_impl->frameIndex.load()]);
+        }
+
         _impl->EndRecordCommandBuffer(_impl->currentImageIndex);
 
         vk::PipelineStageFlags waitDestinationStageMask(vk::PipelineStageFlagBits::eColorAttachmentOutput);
@@ -1177,6 +1186,7 @@ namespace WillowVox
         ubo.proj[1][1] *= -1;
 
         memcpy(_impl->uniformBuffersMapped[_impl->frameIndex.load()], &ubo, sizeof(ubo));
+        vmaFlushAllocation(_impl->allocator, _impl->uniformBuffersMemory[_impl->frameIndex.load()], 0, sizeof(ubo));
     }
 
     void Renderer::UpdatePushConstants(const Shader& shader, const glm::mat4& model)
@@ -1208,7 +1218,7 @@ namespace WillowVox
     void Renderer::Impl::RecreateSwapChain()
     {
         auto size = window->GetSize();
-        while (size.x == 0 && size.y == 0)
+        while (size.x == 0 || size.y == 0)
         {
             size = window->GetSize();
             glfwWaitEvents();
@@ -1262,7 +1272,14 @@ namespace WillowVox
     {
         if (!_impl) return;
 
-        _impl->device.waitIdle();
+        {
+            std::lock_guard<std::mutex> lock(_impl->queueMutex);
+            _impl->device.waitIdle();
+        }
+
+        ImGui_ImplVulkan_Shutdown();
+        ImGui_ImplGlfw_Shutdown();
+        ImGui::DestroyContext();
 
         // Destroy command resource creation contexts
         {
@@ -1333,7 +1350,122 @@ namespace WillowVox
         LOG_INFO("Successfully cleaned up rendering resources");
     }
 
-    Shader* Renderer::CreateShader(const std::string& shaderPath)
+    static std::vector<vk::VertexInputAttributeDescription> ConvertVertexAttributesToVulkan(const std::vector<VertexAttribute>& attributes)
+    {
+        std::vector<vk::VertexInputAttributeDescription> vulkanAttributes;
+        for (auto& a : attributes)
+        {
+            vk::Format format;
+            switch (a.format)
+            {
+            case VertexAttributeType::FLOAT32:
+                format = vk::Format::eR32Sfloat;
+                break;
+            case VertexAttributeType::FLOAT32_2:
+                format = vk::Format::eR32G32Sfloat;
+                break;
+            case VertexAttributeType::FLOAT32_3:
+                format = vk::Format::eR32G32B32Sfloat;
+                break;
+            case VertexAttributeType::FLOAT32_4:
+                format = vk::Format::eR32G32B32A32Sfloat;
+                break;
+
+            case VertexAttributeType::INT32:
+                format = vk::Format::eR32Sint;
+                break;
+            case VertexAttributeType::INT32_2:
+                format = vk::Format::eR32G32Sint;
+                break;
+            case VertexAttributeType::INT32_3:
+                format = vk::Format::eR32G32B32Sint;
+                break;
+            case VertexAttributeType::INT32_4:
+                format = vk::Format::eR32G32B32A32Sint;
+                break;
+
+            case VertexAttributeType::UINT32:
+                format = vk::Format::eR32Uint;
+                break;
+            case VertexAttributeType::UINT32_2:
+                format = vk::Format::eR32G32Uint;
+                break;
+            case VertexAttributeType::UINT32_3:
+                format = vk::Format::eR32G32B32Uint;
+                break;
+            case VertexAttributeType::UINT32_4:
+                format = vk::Format::eR32G32B32A32Uint;
+                break;
+
+            case VertexAttributeType::INT16:
+                format = vk::Format::eR16Sint;
+                break;
+            case VertexAttributeType::INT16_2:
+                format = vk::Format::eR16G16Sint;
+                break;
+            case VertexAttributeType::INT16_3:
+                format = vk::Format::eR16G16B16Sint;
+                break;
+            case VertexAttributeType::INT16_4:
+                format = vk::Format::eR16G16B16A16Sint;
+                break;
+
+            case VertexAttributeType::UINT16:
+                format = vk::Format::eR16Uint;
+                break;
+            case VertexAttributeType::UINT16_2:
+                format = vk::Format::eR16G16Uint;
+                break;
+            case VertexAttributeType::UINT16_3:
+                format = vk::Format::eR16G16B16Uint;
+                break;
+            case VertexAttributeType::UINT16_4:
+                format = vk::Format::eR16G16B16A16Uint;
+                break;
+
+            case VertexAttributeType::INT8:
+                format = vk::Format::eR8Sint;
+                break;
+            case VertexAttributeType::INT8_2:
+                format = vk::Format::eR8G8Sint;
+                break;
+            case VertexAttributeType::INT8_3:
+                format = vk::Format::eR8G8B8Sint;
+                break;
+            case VertexAttributeType::INT8_4:
+                format = vk::Format::eR8G8B8A8Sint;
+                break;
+
+            case VertexAttributeType::UINT8:
+                format = vk::Format::eR8Uint;
+                break;
+            case VertexAttributeType::UINT8_2:
+                format = vk::Format::eR8G8Uint;
+                break;
+            case VertexAttributeType::UINT8_3:
+                format = vk::Format::eR8G8B8Uint;
+                break;
+            case VertexAttributeType::UINT8_4:
+                format = vk::Format::eR8G8B8A8Uint;
+                break;
+
+            default:
+                format = vk::Format::eR32G32B32Sfloat;
+                break;
+            }
+
+            vulkanAttributes.push_back({
+                .location = a.location,
+                .binding = 0,
+                .format = format,
+                .offset = a.offset
+                });
+        }
+
+        return vulkanAttributes;
+    }
+
+    Shader* Renderer::CreateShader(const std::string& shaderPath, uint32_t vertexSize, const std::vector<VertexAttribute>& attributes)
     {
         // Create shader module
         auto shaderCode = ReadFile(shaderPath);
@@ -1359,13 +1491,17 @@ namespace WillowVox
         vk::PipelineShaderStageCreateInfo shaderStages[] = { vertShaderStageInfo, fragShaderStageInfo };
 
         // Define vertex info
-        auto bindingDescription = GetVertexBindingDescription();
-        auto attributeDescriptions = GetVertexAttributeDescriptions();
+        vk::VertexInputBindingDescription bindingDescription = {
+            .binding = 0,
+            .stride = vertexSize,
+            .inputRate = vk::VertexInputRate::eVertex
+        };
+        auto vertexAttributes = ConvertVertexAttributesToVulkan(attributes);
         vk::PipelineVertexInputStateCreateInfo vertexInputInfo{
             .vertexBindingDescriptionCount = 1,
             .pVertexBindingDescriptions = &bindingDescription,
-            .vertexAttributeDescriptionCount = static_cast<uint32_t>(attributeDescriptions.size()),
-            .pVertexAttributeDescriptions = attributeDescriptions.data()
+            .vertexAttributeDescriptionCount = static_cast<uint32_t>(vertexAttributes.size()),
+            .pVertexAttributeDescriptions = vertexAttributes.data()
         };
 
         // Common defines for all shaders
@@ -1456,9 +1592,9 @@ namespace WillowVox
         return new Shader(&_impl->device, &pipelineLayout, &pipeline);
     }
 
-    Mesh* Renderer::CreateMesh(const Vertex* vertices, uint32_t vertexCount, const uint32_t* indices, uint32_t indexCount)
+    Mesh* Renderer::CreateMesh(const void* vertices, uint32_t verticesSize, const uint32_t* indices, uint32_t indexCount)
     {
-        if (vertexCount == 0 || indexCount == 0)
+        if (verticesSize == 0 || indexCount == 0)
         {
             return new Mesh(this, nullptr, nullptr, nullptr, nullptr, 0);
         }
@@ -1466,7 +1602,7 @@ namespace WillowVox
         auto& creationContext = _impl->GetThreadResourceCreationContext();
 
         // Create vertex buffer
-        vk::DeviceSize vertexBufferSize = sizeof(vertices[0]) * vertexCount;
+        vk::DeviceSize vertexBufferSize = verticesSize;
 
         auto [vertexStagingBufer, vertexStagingBufferAlloc] =
             CreateBuffer(_impl->allocator, vertexBufferSize, vk::BufferUsageFlagBits::eTransferSrc, BufferAccessType::Temporary);
@@ -1543,6 +1679,9 @@ namespace WillowVox
 
     void Renderer::Stop()
     {
-        _impl->device.waitIdle();
+        {
+            std::lock_guard<std::mutex> lock(_impl->queueMutex);
+            _impl->device.waitIdle();
+        }
     }
 }

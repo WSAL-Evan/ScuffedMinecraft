@@ -13,9 +13,9 @@ namespace WillowVox
 
         // Initialize rendering variables
         _window = std::make_unique<Window>(config.name, config.width, config.height);
-        _renderer = std::make_unique<Renderer>(_window.get());
-
         Input::Init();
+
+        _renderer = std::make_unique<Renderer>(_window.get());
 
         // User-defined start logic
         Start();
@@ -35,9 +35,13 @@ namespace WillowVox
 
             Update(deltaTime);
 
-            _renderer->BeginRendering();
-            Render();
-            _renderer->EndRendering();
+            if (_renderer->BeginRendering())
+            {
+                Render();
+                _renderer->BeginUI();
+                DrawUI();
+                _renderer->EndRendering();
+            }
         }
 
         _renderer->Stop();

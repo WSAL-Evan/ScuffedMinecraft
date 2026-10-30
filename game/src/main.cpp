@@ -1,20 +1,24 @@
 #include <wv/core.h>
 
+#include <physics/VoxelRaycast.h>
 #include <world/ChunkData.h>
-#include <world/ChunkRenderer.h>
 #include <world/BlockDisplay.h>
 #include <world/ChunkManager.h>
-#include <world/ChunkRef.h>
 #include <world/Block.h>
 #include <world/BlockRegistry.h>
+#include <world/ChunkVertex.h>
+#include <world/WorldCoords.h>
 #include <FastNoise/FastNoise.h>
+#include <cpu_count.h>
+#include <algorithm>
 #include <cstdlib>
+#include <imgui.h>
 
 using namespace WillowVox;
 
 namespace ScuffedMinecraft
 {
-    class ScuffedMinecraftApp : public WillowVox::App
+    class ScuffedMinecraftApp : public WillowVox::App 
     {
     protected:
         void Start() override
@@ -24,13 +28,17 @@ namespace ScuffedMinecraft
             _renderer->SetClearColor({ 0.4f, 0.6f, 0.9f, 1.0f });
 
             // Load assets
-            _shader = std::unique_ptr<Shader>(_renderer->CreateShader("assets/shaders/shader.spv"));
+            _shader = std::unique_ptr<Shader>(_renderer->CreateShader<ChunkVertex>("assets/shaders/shader.spv"));
 
             // Register blocks
-            BlockRegistry* blockRegistry = BlockRegistry::GetInstance();
-            BlockId dirtBlockId = blockRegistry->RegisterBlock({ "Dirt Block" }, { 0.0f, 0.5f, 0.0f, 0.5f });
-            BlockId grassBlockId = blockRegistry->RegisterBlock({ "Grass Block" }, 
-                { 0.5f, 1.0f, 0.0f, 0.5f,  0.0f, 0.5f, 0.0f, 0.5f,  0.0f, 0.5f, 0.5f, 1.0f });
+            _blockRegistry = BlockRegistry::GetInstance();
+            BlockId dirtBlockId = _blockRegistry->RegisterBlock({ "Dirt Block" }, { 0.0f, 0.25f, 0.0f, 0.5f });
+            BlockId grassBlockId = _blockRegistry->RegisterBlock({ "Grass Block" },
+                { 0.25f, 0.5f, 0.0f, 0.5f,  0.0f, 0.25f, 0.0f, 0.5f,  0.0f, 0.25f, 0.5f, 1.0f });
+            BlockId stoneBlockId = _blockRegistry->RegisterBlock({ "Stone Block" }, { 0.25f, 0.5f, 0.5f, 1.0f });
+            BlockId glowstoneId = _blockRegistry->RegisterBlock({ "Glowstone", true, 15 }, { 0.5f, 0.75f, 0.0f, 0.5f });
+
+            _selectedBlock = glowstoneId;
 
             _camera = std::make_unique<Camera>();
             _camera->position = { 0.0f, 15.0f, 0.0f };
@@ -38,7 +46,11 @@ namespace ScuffedMinecraft
             Input::SetMouseMode(MouseMode::DISABLED);
 
             // Create chunk manager
-            _chunkManager = std::make_unique<ChunkManager>(_shader.get(), _camera.get());
+            LOG_INFO("Physical CPU Cores: %d", cpu_count());
+            _chunkManager = std::make_unique<ChunkManager>(_shader.get(), _camera.get(), std::max(1, (int)cpu_count() - 2));
+            _chunkManager->SetRenderDistance(_renderDistance, _renderHeight);
+
+            _start = std::chrono::steady_clock::now();
         }
 
         void Update(float deltaTime) override
@@ -47,16 +59,34 @@ namespace ScuffedMinecraft
             _frameTimer += deltaTime;
             if (_frameTimer >= 1.0f)
             {
-                LOG_INFO("FPS: %d, Chunk Renderers: %d", _frames, _chunkManager->GetChunkRenderersSize());
+                _fps = _frames;
                 _frames = 0;
                 _frameTimer -= 1.0f;
             }
 
+            ProcessInput(deltaTime);
+
+            _chunkManager->Update();
+
+            if (_generating && _chunkManager->GetChunkMeshCount() >= 1445)
+            {
+                auto end = std::chrono::steady_clock::now();
+                std::chrono::duration<double, std::milli> elapsed = end - _start;
+                LOG_INFO("Generation took %f ms", elapsed);
+                _generating = false;
+            }
+        }
+
+        void ProcessInput(float deltaTime)
+        {
             if (Input::GetKeyDown(Key::ESC))
             {
                 _movementDisabled = !_movementDisabled;
                 if (_movementDisabled)
+                {
+                    _firstFrame = true;
                     Input::SetMouseMode(MouseMode::NORMAL);
+                }
                 else
                     Input::SetMouseMode(MouseMode::DISABLED);
             }
@@ -97,24 +127,69 @@ namespace ScuffedMinecraft
             if (Input::GetKey(Key::Q))
                 _camera->position -= _camera->Up() * _movementSpeed * deltaTime;
 
-            auto mouseMove = Input::GetMouseDelta();
-            _camera->direction.y += mouseMove.x * _mouseSensitivity;
-            _camera->direction.x -= mouseMove.y * _mouseSensitivity;
-            if (_camera->direction.x >= 89.9f)
-                _camera->direction.x = 89.9f;
-            else if (_camera->direction.x <= -89.9f)
-                _camera->direction.x = -89.9f;
+            if (_firstFrame)
+                _firstFrame = false;
+            else
+            {
+                auto mouseMove = Input::GetMouseDelta();
+                _camera->direction.y += mouseMove.x * _mouseSensitivity;
+                _camera->direction.x -= mouseMove.y * _mouseSensitivity;
+                if (_camera->direction.x >= 89.9f)
+                    _camera->direction.x = 89.9f;
+                else if (_camera->direction.x <= -89.9f)
+                    _camera->direction.x = -89.9f;
 
-            auto scrollDelta = Input::GetMouseScrollDelta();
-            _movementSpeed += scrollDelta.y;
-            if (_movementSpeed < 0.0f)
-                _movementSpeed = 0.0f;
-            else if (_movementSpeed > 100.0f)
-                _movementSpeed = 100.0f;
+                auto scrollDelta = Input::GetMouseScrollDelta();
+                _movementSpeed += scrollDelta.y;
+                if (_movementSpeed < 0.0f)
+                    _movementSpeed = 0.0f;
+                else if (_movementSpeed > 100.0f)
+                    _movementSpeed = 100.0f;
+            }
 
-            _chunkManager->Update();
+            if (Input::GetMouseButtonDown(0))
+            {
+                auto result = VoxelRaycast(*_chunkManager, _camera->position, _camera->Front(), 10.0f);
 
-            //LOG_INFO("Position: (%f, %f, %f)", _camera->position.x, _camera->position.y, _camera->position.z);
+                if (result.hit)
+                {
+                    auto blockPos = WorldToBlock(result.hitX, result.hitY, result.hitZ);
+                    _chunkManager->SetBlock(blockPos.x, blockPos.y, blockPos.z, AIR);
+                }
+            }
+            else if (Input::GetMouseButtonDown(1))
+            {
+                auto result = VoxelRaycast(*_chunkManager, _camera->position, _camera->Front(), 10.0f);
+
+                if (result.hit)
+                {
+                    auto block = WorldToBlock(result.hitX, result.hitY, result.hitZ);
+                    float distX = result.hitX - (block.x + .5f);
+                    float distY = result.hitY - (block.y + .5f);
+                    float distZ = result.hitZ - (block.z + .5f);
+
+                    int blockX = block.x;
+                    int blockY = block.y;
+                    int blockZ = block.z;
+
+                    // Choose face to place on
+                    if (std::fabs(distX) > std::fabs(distY) && std::fabs(distX) > std::fabs(distZ))
+                        blockX += (distX > 0 ? 1 : -1);
+                    else if (std::fabs(distY) > std::fabs(distX) && std::fabs(distY) > std::fabs(distZ))
+                        blockY += (distY > 0 ? 1 : -1);
+                    else
+                        blockZ += (distZ > 0 ? 1 : -1);
+
+                    _chunkManager->SetBlock(blockX, blockY, blockZ, _selectedBlock);
+                }
+            }
+            else if (Input::GetMouseButtonDown(2))
+            {
+                auto result = VoxelRaycast(*_chunkManager, _camera->position, _camera->Front(), 10.0f);
+
+                if (result.hit)
+                    _selectedBlock = _chunkManager->GetBlockId(WorldToBlock(result.hitX, result.hitY, result.hitZ));
+            }
         }
 
         void Render() override
@@ -124,17 +199,51 @@ namespace ScuffedMinecraft
             _renderer->UpdateUniformBuffer(*_camera);
         }
 
+        void DrawUI() override
+        {
+            ImGui::Begin("Scuffed Minecraft");
+
+            ImGui::Text("FPS: %d", _fps);
+            ImGui::Text("Chunk Holders: %d (Data: %d, Renderers: %d)", _chunkManager->GetChunkHolderCount(), _chunkManager->GetChunkDataCount(), _chunkManager->GetChunkMeshCount());
+            ImGui::Text("Cam Pos: (%f, %f, %f)", _camera->position.x, _camera->position.y, _camera->position.z);
+            ImGui::Text("Selected Block: %d (%s)", _selectedBlock, _blockRegistry->GetBlock(_selectedBlock)->name.c_str());
+
+            auto camBlockPos = WorldToBlock(_camera->position);
+            ImGui::Text("Light Value: %d (Sky: %d)", _chunkManager->GetLightLevel(camBlockPos), _chunkManager->GetSkyLightLevel(camBlockPos));
+
+            if (ImGui::SliderInt("Render Distance", &_renderDistance, 1, 25))
+                _chunkManager->SetRenderDistance(_renderDistance, _renderHeight);
+            if (ImGui::SliderInt("Render Height", &_renderHeight, 1, 10))
+                _chunkManager->SetRenderDistance(_renderDistance, _renderHeight);
+            if (ImGui::Checkbox("Smooth Lighting", &_smoothLighting))
+                _chunkManager->SetSmoothLighting(_smoothLighting);
+
+            ImGui::End();
+        }
+
     private:
         std::unique_ptr<Shader> _shader;
         std::unique_ptr<Camera> _camera;
         std::unique_ptr<ChunkManager> _chunkManager;
+        BlockRegistry* _blockRegistry;
 
         bool _movementDisabled = false;
         float _movementSpeed = 10.0f;
         float _mouseSensitivity = 0.3f;
+        bool _firstFrame = true;
 
         int _frames = 0;
         float _frameTimer = 0;
+        int _fps = 0;
+
+        int _renderDistance = 8;
+        int _renderHeight = 2;
+        bool _smoothLighting = true;
+
+        BlockId _selectedBlock;
+
+        std::chrono::steady_clock::time_point _start;
+        bool _generating = true;
     };
 }
 

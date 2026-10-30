@@ -8,8 +8,11 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 add_executable(ScuffedMinecraft
     ${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp
 
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/physics/VoxelRaycast.cpp
+
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/world/BuildChunkMesh.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/world/ChunkManager.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/world/ChunkRenderer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/world/VoxelLighting.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/world/WorldGen.cpp
 )
 

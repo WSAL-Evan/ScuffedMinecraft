@@ -34,6 +34,8 @@ namespace WillowVox
         virtual void Update(float deltaTime) {}
         // Runs at the end of every frame for custom rendering code (only to be used for advanced reasons)
         virtual void Render() {}
+        // Runs after rendering. Use ImGui
+        virtual void DrawUI() {}
 
         std::unique_ptr<Renderer> _renderer;
         std::unique_ptr<Window> _window;

@@ -8,33 +8,49 @@ namespace ScuffedMinecraft
 	{
 	public:
 
-		ChunkData()
+		ChunkData(const glm::ivec3& id)
+			: _id(id)
 		{
-			for (int i = 0; i < CHUNK_VOLUME; i++)
-				_data[i] = AIR;
+			memset(_data, AIR, sizeof(_data));
+			memset(_lightData, 0, sizeof(_lightData));
 		}
 
-		~ChunkData()
-		{
-
-		}
-
-		static constexpr bool InBounds(int x, int y, int z) noexcept
+		static inline bool InBounds(int x, int y, int z) noexcept
 		{
 			return 0 <= x && x < CHUNK_SIZE &&
 				0 <= y && y < CHUNK_SIZE &&
 				0 <= z && z < CHUNK_SIZE;
 		}
 
-		static constexpr int Index(int x, int y, int z) noexcept
+		static inline bool InBounds(int index) noexcept
 		{
-			return y + CHUNK_SIZE * (x + CHUNK_SIZE * z);
+			return index >= 0 && index < CHUNK_VOLUME;
+		}
+
+		static inline int Index(int x, int y, int z) noexcept
+		{
+			return z << (CHUNK_SHIFT * 2) | x << CHUNK_SHIFT | y;
+		}
+
+		static inline int GetX(int index) noexcept
+		{
+			return (index >> CHUNK_SHIFT) & CHUNK_MASK;
+		}
+
+		static inline int GetY(int index) noexcept
+		{
+			return index & CHUNK_MASK;
+		}
+
+		static inline int GetZ(int index) noexcept
+		{
+			return (index >> (CHUNK_SHIFT * 2));
 		}
 
 		// 0 = invalid block position
 		BlockId GetBlock(int x, int y, int z) const
 		{
-			if (!InBounds(x, y, z)) return 0;
+			assert(InBounds(x, y, z));
 			int index = Index(x, y, z);
 			return _data[index];
 		}
@@ -42,31 +58,108 @@ namespace ScuffedMinecraft
 		// 0 = invalid block position
 		BlockId GetBlock(int index) const
 		{
-			if (index < 0 || index > CHUNK_VOLUME)
-				return 0;
+			assert(InBounds(index));
 			return _data[index];
 		}
 
 		// 0 = invalid block position
+		// Returns old block ID
 		BlockId SetBlock(int x, int y, int z, int blockId)
 		{
-			if (!InBounds(x, y, z)) return 0;
+			assert(InBounds(x, y, z));
 			int index = Index(x, y, z);
+			BlockId old = _data[index];
 			_data[index] = blockId;
-			return blockId;
+			return old;
 		}
 
 		// 0 = invalid block position
+		// Returns old block ID
 		BlockId SetBlock(int index, int blockId)
 		{
-			if (index < 0 || index > CHUNK_VOLUME)
-				return 0;
+			assert(InBounds(index));
+			BlockId old = _data[index];
 			_data[index] = blockId;
-			return blockId;
+			return old;
 			
 		}
 
+		int GetSkyLightLevel(int index) const
+		{
+			// XXXX0000
+			assert(InBounds(index));
+			return (_lightData[index] >> 4) & 0xF;
+		}
+
+		int GetSkyLightLevel(int x, int y, int z) const
+		{
+			assert(InBounds(x, y, z));
+			return GetSkyLightLevel(Index(x, y, z));
+		}
+
+		void SetSkyLightLevel(int index, int light)
+		{
+			// XXXX0000
+			assert(InBounds(index));
+			_lightData[index] = (_lightData[index] & 0xF) | (light << 4);
+		}
+
+		void SetSkyLightLevel(int x, int y, int z, int light)
+		{
+			assert(InBounds(x, y, z));
+			SetSkyLightLevel(Index(x, y, z), light);
+		}
+
+		int GetLightLevel(int index) const
+		{
+			// 0000XXXX
+			assert(InBounds(index));
+			return _lightData[index] & 0xF;
+		}
+
+		int GetLightLevel(int x, int y, int z) const
+		{
+			assert(InBounds(x, y, z));
+			return GetLightLevel(Index(x, y, z));
+		}
+
+		void SetLightLevel(int index, int light)
+		{
+			// 0000XXXX
+			assert(InBounds(index));
+			_lightData[index] = (_lightData[index] & 0xF0) | light;
+		}
+
+		void SetLightLevel(int x, int y, int z, int light)
+		{
+			assert(InBounds(x, y, z));
+			SetLightLevel(Index(x, y, z), light);
+		}
+
+		uint8_t GetRawLightLevel(int index) const
+		{
+			assert(InBounds(index));
+			return _lightData[index];
+		}
+
+		uint8_t GetRawLightLevel(int x, int y, int z) const
+		{
+			assert(InBounds(x, y, z));
+			return _lightData[Index(x, y, z)];
+		}
+
+		glm::ivec3 GetId() const { return _id; }
+
+		bool GetCalculatedLighting() const { return _calculatedLighting; }
+		void SetCalculatedLighting() { _calculatedLighting = true; }
+
+		const BlockId* GetData() const { return _data; }
+		const uint8_t* GetLightData() const { return _lightData; }
+
 	private:
+		glm::ivec3 _id;
 		BlockId _data[CHUNK_VOLUME];
+		uint8_t _lightData[CHUNK_VOLUME];
+		bool _calculatedLighting = false;
 	};
 }
