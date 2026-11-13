@@ -9,9 +9,8 @@ using namespace WillowVox;
 
 namespace ScuffedMinecraft
 {
-	ChunkManager::ChunkManager(Shader* shader, Camera* camera, int threads)
-		: _shader(shader), _camera(camera), _numThreads(threads), _worldGen(0.0f, 10.0f, 100.0f, 2, 0.3f, 4.0f,
-			30.0f, 2, 0.25f, 3.0f, 0.8f), _jobPool(threads)
+	ChunkManager::ChunkManager(Shader* shader, Camera* camera, int threads, std::shared_ptr<WorldGen> worldGen)
+		: _shader(shader), _camera(camera), _numThreads(threads), _worldGen(worldGen), _jobPool(threads)
 	{
 		_renderer = Renderer::GetInstance();
 
@@ -119,7 +118,7 @@ namespace ScuffedMinecraft
 		}
 
 		for (auto& h : chunksModified)
-			MarkChunkDirty(*h);
+			if (h) MarkChunkDirty(*h);
 
 		if (!chunkHolder->mesh) _numChunkMeshes++;
 		chunkHolder->mesh = std::move(BuildChunkMesh(*BuildSnapshot(chunkHolder, GetNeighboringChunks(chunkHolder->id)), _smoothLighting));
@@ -270,16 +269,59 @@ namespace ScuffedMinecraft
 		return std::shared_ptr<ChunkSnapshot>(snapshot);
 	}
 
+	std::shared_ptr<FeatureSnapshot> ChunkManager::BuildFeatureSnapshot(ChunkHolder* holder)
+	{
+		if (!holder->data) return nullptr;
+
+		FeatureSnapshot* snapshot = new FeatureSnapshot();
+		snapshot->id = holder->id;
+		snapshot->dataVersion = holder->dataVersion;
+		memcpy(&snapshot->blocks, holder->data->GetData(), CHUNK_VOLUME * sizeof(BlockId));
+
+		// Copy neighboring surface blocks
+		int index = 0;
+		for (int z = -1; z <= 1; z++)
+		{
+			for (int x = -1; x <= 1; x++)
+			{
+				for (int y = -1; y <= 1; y++)
+				{
+					glm::ivec3 id = holder->id + glm::ivec3{ x, y, z };
+					auto n = GetChunkData(id);
+					if (!n) continue;
+					snapshot->ids[index] = id;
+
+					// Copy surface blocks
+					snapshot->surfaceBlocks[index] = n->GetSurfaceBlocks();
+					index++;
+				}
+			}
+		}
+
+		return std::shared_ptr<FeatureSnapshot>(snapshot);
+	}
+
 	void ChunkManager::SubmitGenerateChunkJob(int priority, ChunkHolder* holder)
 	{
 		holder->jobInFlight = true;
 		holder->stage = ChunkStage::Loading;
 		_genJobsInFlight++;
-		_jobPool.Submit(priority, [id = holder->id, token = holder->token, worldGen = &_worldGen, inbox = &_jobResultInbox] {
+		_jobPool.Submit(priority, [id = holder->id, token = holder->token, worldGen = _worldGen, inbox = &_jobResultInbox] {
 			ChunkData* data = new ChunkData(id);
-			worldGen->GenerateChunk(id, data);
-			inbox->Push(std::move(ChunkDataResult(id, token, std::unique_ptr<ChunkData>(data))));
+			worldGen->GenerateChunkShape(id, data);
+			inbox->Push(std::move(TerrainShapeResult(id, token, std::unique_ptr<ChunkData>(data))));
 		});
+	}
+
+	void ChunkManager::SubmitGenerateWorldFeaturesJob(int priority, ChunkHolder* holder)
+	{
+		holder->jobInFlight = true;
+		holder->stage = ChunkStage::Loading;
+		_genJobsInFlight++;
+		_jobPool.Submit(priority, [id = holder->id, token = holder->token, worldGen = _worldGen, inbox = &_jobResultInbox, snapshot = BuildFeatureSnapshot(holder)] {
+			worldGen->GenerateChunkFeatures(id, snapshot.get());
+			inbox->Push(std::move(TerrainFeaturesResult(id, token, snapshot->dataVersion, std::vector<BlockId>(std::begin(snapshot->blocks), std::end(snapshot->blocks)))));
+			});
 	}
 
 	void ChunkManager::SubmitGenerateMeshJob(int priority, ChunkHolder* holder, const std::vector<ChunkHolder*> neighbors)
@@ -308,7 +350,7 @@ namespace ScuffedMinecraft
 		auto results = _jobResultInbox.TakeAll();
 		for (auto& result : results)
 		{
-			if (auto* chunkDataResult = std::get_if<ChunkDataResult>(&result))
+			if (auto* chunkDataResult = std::get_if<TerrainShapeResult>(&result))
 			{
 				_genJobsInFlight--;
 				auto* holder = GetChunkHolder(chunkDataResult->id);
@@ -316,9 +358,25 @@ namespace ScuffedMinecraft
 				if (!holder || holder->stage != ChunkStage::Loading || holder->token != chunkDataResult->token) continue;
 
 				holder->data = std::move(chunkDataResult->data);
-				holder->stage = ChunkStage::Generated;
+				holder->stage = ChunkStage::TerrainShape;
 				holder->jobInFlight = false;
 				_numChunkData++;
+			}
+			else if (auto* terrainFeaturesResult = std::get_if<TerrainFeaturesResult>(&result))
+			{
+				_genJobsInFlight--;
+				auto* holder = GetChunkHolder(terrainFeaturesResult->id);
+
+				if (!holder || holder->stage != ChunkStage::Loading || holder->token != terrainFeaturesResult->token) continue;
+				if (holder->dataVersion != terrainFeaturesResult->dataVersion)
+				{
+					holder->stage = ChunkStage::TerrainShape;
+					holder->jobInFlight = false;
+				}
+
+				holder->data->SetData(terrainFeaturesResult->blocks.data());
+				holder->stage = ChunkStage::TerrainFeatures;
+				holder->jobInFlight = false;
 			}
 			else if (auto* meshResult = std::get_if<MeshResult>(&result))
 			{
@@ -350,7 +408,24 @@ namespace ScuffedMinecraft
 				// Generate missing chunk data
 				SubmitGenerateChunkJob(1, holder.get());
 			}
-			else if (!lightingDone && holder->stage == ChunkStage::Generated)
+			else if (_genJobsInFlight < _maxGenJobsInFlight && holder->stage == ChunkStage::TerrainShape)
+			{
+				// Generate world features if surrounding chunks are generated to shape level
+				auto neighbors = GetNeighboringChunks(pos);
+				bool readyToGen = true;
+				for (auto* n : neighbors)
+				{
+					if (!n || n->stage < ChunkStage::TerrainShape)
+					{
+						readyToGen = false;
+						break;
+					}
+				}
+				if (!readyToGen) continue;
+
+				SubmitGenerateWorldFeaturesJob(1, holder.get());
+			}
+			else if (!lightingDone && holder->stage == ChunkStage::TerrainFeatures)
 			{
 				// Light unlit chunk if chunks around it are at least generated
 				auto nxIt = _chunks.find(pos + glm::ivec3(-1, 0, 0));
@@ -359,12 +434,12 @@ namespace ScuffedMinecraft
 				auto pyIt = _chunks.find(pos + glm::ivec3(0, 1, 0));
 				auto nzIt = _chunks.find(pos + glm::ivec3(0, 0, -1));
 				auto pzIt = _chunks.find(pos + glm::ivec3(0, 0, 1));
-				if (nxIt != _chunks.end() && nxIt->second->stage >= ChunkStage::Generated &&
-					pxIt != _chunks.end() && pxIt->second->stage >= ChunkStage::Generated &&
-					nyIt != _chunks.end() && nyIt->second->stage >= ChunkStage::Generated &&
-					pyIt != _chunks.end() && pyIt->second->stage >= ChunkStage::Generated &&
-					nzIt != _chunks.end() && nzIt->second->stage >= ChunkStage::Generated &&
-					pzIt != _chunks.end() && pzIt->second->stage >= ChunkStage::Generated)
+				if (nxIt != _chunks.end() && nxIt->second->stage >= ChunkStage::TerrainFeatures &&
+					pxIt != _chunks.end() && pxIt->second->stage >= ChunkStage::TerrainFeatures &&
+					nyIt != _chunks.end() && nyIt->second->stage >= ChunkStage::TerrainFeatures &&
+					pyIt != _chunks.end() && pyIt->second->stage >= ChunkStage::TerrainFeatures &&
+					nzIt != _chunks.end() && nzIt->second->stage >= ChunkStage::TerrainFeatures &&
+					pzIt != _chunks.end() && pzIt->second->stage >= ChunkStage::TerrainFeatures)
 				{
 					LightChunk(holder.get());
 					holder->stage = ChunkStage::Lit;

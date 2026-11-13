@@ -55,6 +55,14 @@ namespace ScuffedMinecraft
 		vertexCount += 4;
 	}
 
+	static inline bool CullsFace(BlockId block)
+	{
+		if (block == AIR) return false;
+
+		const auto registry = BlockRegistry::GetInstance();
+		return !registry->GetBlock(block)->transparent;
+	}
+
 	std::unique_ptr<WillowVox::Mesh> BuildChunkMesh(const ChunkSnapshot& snapshot, bool smoothLighting)
 	{
 		static auto* blockRegistry = BlockRegistry::GetInstance();
@@ -77,75 +85,109 @@ namespace ScuffedMinecraft
 
 					auto* blockDisplay = blockRegistry->GetBlockDisplay(block);
 
-					// Create cube
-					for (int d = 0; d < 6; d++)
+					if (blockDisplay->foliageRendering)
 					{
-						glm::ivec3 n = glm::ivec3(x, y, z) + dirOffsets[d];
-						if (snapshot.blocks[PadIndex(n.x, n.y, n.z)] == AIR)
+						int rawLight = snapshot.light[PadIndex(x, y, z)];
+						int blockLight = rawLight & 0xF;
+						int skyLight = (rawLight >> 4) & 0xF;
+						int lightData = (skyLight * 17) << 8 | (blockLight * 17);
+
+						vertices.emplace_back(glm::vec3(x + 0.1464466094f, y,        z + 0.1464466094f), glm::vec2(blockDisplay->sideTextureMinX, blockDisplay->sideTextureMinY), lightData);
+						vertices.emplace_back(glm::vec3(x + 0.8535533906f, y,        z + 0.8535533906f), glm::vec2(blockDisplay->sideTextureMaxX, blockDisplay->sideTextureMinY), lightData);
+						vertices.emplace_back(glm::vec3(x + 0.1464466094f, y + 1.0f, z + 0.1464466094f), glm::vec2(blockDisplay->sideTextureMinX, blockDisplay->sideTextureMaxY), lightData);
+						vertices.emplace_back(glm::vec3(x + 0.8535533906f, y + 1.0f, z + 0.8535533906f), glm::vec2(blockDisplay->sideTextureMaxX, blockDisplay->sideTextureMaxY), lightData);
+						AddIndices(indices, vertexCount);
+
+						vertices.emplace_back(glm::vec3(x + 0.8535533906f, y, z + 0.8535533906f), glm::vec2(blockDisplay->sideTextureMinX, blockDisplay->sideTextureMinY), lightData);
+						vertices.emplace_back(glm::vec3(x + 0.1464466094f, y, z + 0.1464466094f), glm::vec2(blockDisplay->sideTextureMaxX, blockDisplay->sideTextureMinY), lightData);
+						vertices.emplace_back(glm::vec3(x + 0.8535533906f, y + 1.0f, z + 0.8535533906f), glm::vec2(blockDisplay->sideTextureMinX, blockDisplay->sideTextureMaxY), lightData);
+						vertices.emplace_back(glm::vec3(x + 0.1464466094f, y + 1.0f, z + 0.1464466094f), glm::vec2(blockDisplay->sideTextureMaxX, blockDisplay->sideTextureMaxY), lightData);
+						AddIndices(indices, vertexCount);
+
+						vertices.emplace_back(glm::vec3(x + 0.1464466094f, y, z + 0.8535533906f), glm::vec2(blockDisplay->sideTextureMinX, blockDisplay->sideTextureMinY), lightData);
+						vertices.emplace_back(glm::vec3(x + 0.8535533906f, y, z + 0.1464466094f), glm::vec2(blockDisplay->sideTextureMaxX, blockDisplay->sideTextureMinY), lightData);
+						vertices.emplace_back(glm::vec3(x + 0.1464466094f, y + 1.0f, z + 0.8535533906f), glm::vec2(blockDisplay->sideTextureMinX, blockDisplay->sideTextureMaxY), lightData);
+						vertices.emplace_back(glm::vec3(x + 0.8535533906f, y + 1.0f, z + 0.1464466094f), glm::vec2(blockDisplay->sideTextureMaxX, blockDisplay->sideTextureMaxY), lightData);
+						AddIndices(indices, vertexCount);
+						
+						vertices.emplace_back(glm::vec3(x + 0.8535533906f, y, z + 0.1464466094f), glm::vec2(blockDisplay->sideTextureMinX, blockDisplay->sideTextureMinY), lightData);
+						vertices.emplace_back(glm::vec3(x + 0.1464466094f, y, z + 0.8535533906f), glm::vec2(blockDisplay->sideTextureMaxX, blockDisplay->sideTextureMinY), lightData);
+						vertices.emplace_back(glm::vec3(x + 0.8535533906f, y + 1.0f, z + 0.1464466094f), glm::vec2(blockDisplay->sideTextureMinX, blockDisplay->sideTextureMaxY), lightData);
+						vertices.emplace_back(glm::vec3(x + 0.1464466094f, y + 1.0f, z + 0.8535533906f), glm::vec2(blockDisplay->sideTextureMaxX, blockDisplay->sideTextureMaxY), lightData);
+						AddIndices(indices, vertexCount);
+					}
+					else
+					{
+						// Create cube
+						for (int d = 0; d < 6; d++)
 						{
-							int blockLight;
-							int skyLight;
-							uint32_t lightData;
-							if (!smoothLighting)
+							glm::ivec3 n = glm::ivec3(x, y, z) + dirOffsets[d];
+							if (!CullsFace(snapshot.blocks[PadIndex(n.x, n.y, n.z)]))
 							{
-								int rawLight = snapshot.light[PadIndex(n.x, n.y, n.z)];
-								blockLight = rawLight & 0xF;
-								skyLight = (rawLight >> 4) & 0xF;
-								lightData = (skyLight * 17) << 8 | (blockLight * 17);
-							}
-
-							for (int v = 0; v < 4; v++)
-							{
-								if (smoothLighting)
+								int blockLight;
+								int skyLight;
+								uint32_t lightData;
+								if (!smoothLighting)
 								{
-									blockLight = 0;
-									int blockLightCorner = 0;
-									skyLight = 0;
-									int skyLightCorner = 0;
-									int airBlocks = 0;
-									int aoEdges = 0;
-									bool aoCorner = false;
-									for (int vx = 0; vx <= 1; vx++)
-									{
-										for (int vy = 0; vy <= 1; vy++)
-										{
-											int vxi = v % 2 + vx;
-											int vyi = v / 2 + vy;
-											int vi = vxi + (vyi * 3);
-											if (snapshot.blocks[index + SmoothLightingIndexOffsets[d][vi]] == AIR)
-											{
-												airBlocks++;
-												if (vxi == 1 || vyi == 1)
-												{
-													blockLight += snapshot.light[index + SmoothLightingIndexOffsets[d][vi]] & 0xF;
-													skyLight += (snapshot.light[index + SmoothLightingIndexOffsets[d][vi]] >> 4) & 0xF;
-												}
-												else
-												{
-													blockLightCorner += snapshot.light[index + SmoothLightingIndexOffsets[d][vi]] & 0xF;
-													skyLightCorner += (snapshot.light[index + SmoothLightingIndexOffsets[d][vi]] >> 4) & 0xF;
-												}
-											}
-											else if (vxi == 1 || vyi == 1) aoEdges++;
-											else aoCorner = true;
-										}
-									}
-
-									if (aoEdges < 2)
-									{
-										blockLight += blockLightCorner;
-										skyLight += skyLightCorner;
-									}
-									blockLight = (int)(blockLight / (float)airBlocks * 17.0f);
-									skyLight = (int)(skyLight / (float)airBlocks * 17.0f);
-									int aoValue = aoEdges > 0 ? aoEdges : (aoCorner ? 1 : 0);
-									lightData = aoValue << 16 | skyLight << 8 | blockLight;
+									int rawLight = snapshot.light[PadIndex(n.x, n.y, n.z)];
+									blockLight = rawLight & 0xF;
+									skyLight = (rawLight >> 4) & 0xF;
+									lightData = (skyLight * 17) << 8 | (blockLight * 17);
 								}
 
-								vertices.emplace_back(glm::vec3(x, y, z) + VertexPositions[d][v], GetTexturePos(blockDisplay, Direction(d), v), lightData);
-							}
+								for (int v = 0; v < 4; v++)
+								{
+									if (smoothLighting)
+									{
+										blockLight = 0;
+										int blockLightCorner = 0;
+										skyLight = 0;
+										int skyLightCorner = 0;
+										int airBlocks = 0;
+										int aoEdges = 0;
+										bool aoCorner = false;
+										for (int vx = 0; vx <= 1; vx++)
+										{
+											for (int vy = 0; vy <= 1; vy++)
+											{
+												int vxi = v % 2 + vx;
+												int vyi = v / 2 + vy;
+												int vi = vxi + (vyi * 3);
+												if (!CullsFace(snapshot.blocks[index + SmoothLightingIndexOffsets[d][vi]]))
+												{
+													airBlocks++;
+													if (vxi == 1 || vyi == 1)
+													{
+														blockLight += snapshot.light[index + SmoothLightingIndexOffsets[d][vi]] & 0xF;
+														skyLight += (snapshot.light[index + SmoothLightingIndexOffsets[d][vi]] >> 4) & 0xF;
+													}
+													else
+													{
+														blockLightCorner += snapshot.light[index + SmoothLightingIndexOffsets[d][vi]] & 0xF;
+														skyLightCorner += (snapshot.light[index + SmoothLightingIndexOffsets[d][vi]] >> 4) & 0xF;
+													}
+												}
+												else if (vxi == 1 || vyi == 1) aoEdges++;
+												else aoCorner = true;
+											}
+										}
 
-							AddIndices(indices, vertexCount);
+										if (aoEdges < 2)
+										{
+											blockLight += blockLightCorner;
+											skyLight += skyLightCorner;
+										}
+										blockLight = (int)(blockLight / (float)airBlocks * 17.0f);
+										skyLight = (int)(skyLight / (float)airBlocks * 17.0f);
+										int aoValue = aoEdges > 0 ? aoEdges : (aoCorner ? 1 : 0);
+										lightData = aoValue << 16 | skyLight << 8 | blockLight;
+									}
+
+									vertices.emplace_back(glm::vec3(x, y, z) + VertexPositions[d][v], GetTexturePos(blockDisplay, Direction(d), v), lightData);
+								}
+
+								AddIndices(indices, vertexCount);
+							}
 						}
 					}
 				}

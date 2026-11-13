@@ -5,6 +5,7 @@
 #include <world/WorldGen.h>
 #include <world/ChunkJobInbox.h>
 #include <world/ChunkSnapshot.h>
+#include <world/FeatureSnapshot.h>
 #include <wv/core.h>
 #include <wv/pch.h>
 #define GLM_ENABLE_EXPERIMENTAL
@@ -15,7 +16,7 @@ namespace ScuffedMinecraft
 	class ChunkManager
 	{
 	public:
-		ChunkManager(WillowVox::Shader* shader, WillowVox::Camera* camera, int threads);
+		ChunkManager(WillowVox::Shader* shader, WillowVox::Camera* camera, int threads, std::shared_ptr<WorldGen> worldGen);
 		
 		// Requires chunk ID (Main thread only)
 		ChunkHolder* GetChunkHolder(const glm::ivec3& id);
@@ -56,11 +57,13 @@ namespace ScuffedMinecraft
 
 		std::vector<ChunkHolder*> GetNeighboringChunks(const glm::ivec3& id);
 		std::shared_ptr<ChunkSnapshot> BuildSnapshot(ChunkHolder* holder, const std::vector<ChunkHolder*> neighbors);
+		std::shared_ptr<FeatureSnapshot> BuildFeatureSnapshot(ChunkHolder* holder);
 		
 		void SubmitGenerateChunkJob(int priority, ChunkHolder* holder);
+		void SubmitGenerateWorldFeaturesJob(int priority, ChunkHolder* holder);
 		void SubmitGenerateMeshJob(int priority, ChunkHolder* holder, const std::vector<ChunkHolder*> neighbors);
 
-		WorldGen _worldGen;
+		std::shared_ptr<WorldGen> _worldGen;
 
 		int _numThreads;
 		ChunkJobInbox _jobResultInbox;

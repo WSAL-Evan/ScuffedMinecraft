@@ -29,7 +29,13 @@ namespace ScuffedMinecraft
 
 		static inline int Index(int x, int y, int z) noexcept
 		{
+			assert(x >= 0 && x < CHUNK_SIZE && y >= 0 && y < CHUNK_SIZE && z >= 0 && z < CHUNK_SIZE);
 			return z << (CHUNK_SHIFT * 2) | x << CHUNK_SHIFT | y;
+		}
+
+		static inline glm::ivec3 IndexToPos(int index) noexcept
+		{
+			return { (index >> CHUNK_SHIFT) & CHUNK_MASK, index & CHUNK_MASK, (index >> (CHUNK_SHIFT * 2)) & CHUNK_MASK };
 		}
 
 		static inline int GetX(int index) noexcept
@@ -150,16 +156,23 @@ namespace ScuffedMinecraft
 
 		glm::ivec3 GetId() const { return _id; }
 
-		bool GetCalculatedLighting() const { return _calculatedLighting; }
-		void SetCalculatedLighting() { _calculatedLighting = true; }
+		const std::vector<int>& GetSurfaceBlocks() const { return _surfaceBlocks; }
+		void SetSurfaceBlocks(std::vector<int>&& surfaceBlocks) { _surfaceBlocks = std::move(surfaceBlocks); }
+		void ClearSurfaceBlocks() { _surfaceBlocks = {}; }
 
 		const BlockId* GetData() const { return _data; }
 		const uint8_t* GetLightData() const { return _lightData; }
+
+		void SetData(BlockId* data)
+		{
+			memcpy(_data, data, CHUNK_VOLUME * sizeof(BlockId));
+		}
 
 	private:
 		glm::ivec3 _id;
 		BlockId _data[CHUNK_VOLUME];
 		uint8_t _lightData[CHUNK_VOLUME];
-		bool _calculatedLighting = false;
+
+		std::vector<int> _surfaceBlocks;
 	};
 }

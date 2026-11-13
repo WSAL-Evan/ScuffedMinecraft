@@ -4,14 +4,24 @@
 
 namespace ScuffedMinecraft
 {
-	struct ChunkDataResult
+	struct TerrainShapeResult
 	{
-		ChunkDataResult(const glm::ivec3& id, uint64_t token, std::unique_ptr<ChunkData> data)
+		TerrainShapeResult(const glm::ivec3& id, uint64_t token, std::unique_ptr<ChunkData> data)
 			: id(id), token(token), data(std::move(data)) {}
 
 		glm::ivec3 id;
 		uint64_t token;
 		std::unique_ptr<ChunkData> data;
+	};
+	struct TerrainFeaturesResult
+	{
+		TerrainFeaturesResult(const glm::ivec3& id, uint64_t token, uint32_t dataVersion, std::vector<BlockId> blocks)
+			: id(id), token(token), dataVersion(dataVersion), blocks(blocks) {}
+
+		glm::ivec3 id;
+		uint64_t token;
+		uint32_t dataVersion;
+		std::vector<BlockId> blocks;
 	};
 	struct MeshResult
 	{
@@ -23,7 +33,7 @@ namespace ScuffedMinecraft
 		uint32_t dataVersion;
 		std::unique_ptr<WillowVox::Mesh> mesh;
 	};
-	using Result = std::variant<ChunkDataResult, MeshResult>;
+	using Result = std::variant<TerrainShapeResult, TerrainFeaturesResult, MeshResult>;
 
 	class ChunkJobInbox
 	{

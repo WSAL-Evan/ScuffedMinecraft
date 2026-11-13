@@ -10,7 +10,6 @@ namespace ScuffedMinecraft
 	struct ChunkSnapshot
 	{
 		glm::ivec3 id;
-		glm::ivec3 pos;
 		uint32_t dataVersion;
 		BlockId blocks[PAD * PAD * PAD];
 		uint8_t light[PAD * PAD * PAD];

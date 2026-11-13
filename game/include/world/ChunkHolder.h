@@ -5,7 +5,7 @@
 
 namespace ScuffedMinecraft
 {
-	enum class ChunkStage : uint8_t { Missing, Loading, Generated, Lit };
+	enum class ChunkStage : uint8_t { Missing, Loading, TerrainShape, TerrainFeatures, Lit };
 
 	struct ChunkHolder
 	{

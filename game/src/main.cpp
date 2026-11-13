@@ -32,11 +32,19 @@ namespace ScuffedMinecraft
 
             // Register blocks
             _blockRegistry = BlockRegistry::GetInstance();
-            BlockId dirtBlockId = _blockRegistry->RegisterBlock({ "Dirt Block" }, { 0.0f, 0.25f, 0.0f, 0.5f });
+            BlockId dirtBlockId = _blockRegistry->RegisterBlock({ "Dirt Block" }, { 0.0f, 0.25f, 0.0f, 0.25f });
             BlockId grassBlockId = _blockRegistry->RegisterBlock({ "Grass Block" },
-                { 0.25f, 0.5f, 0.0f, 0.5f,  0.0f, 0.25f, 0.0f, 0.5f,  0.0f, 0.25f, 0.5f, 1.0f });
-            BlockId stoneBlockId = _blockRegistry->RegisterBlock({ "Stone Block" }, { 0.25f, 0.5f, 0.5f, 1.0f });
-            BlockId glowstoneId = _blockRegistry->RegisterBlock({ "Glowstone", true, 15 }, { 0.5f, 0.75f, 0.0f, 0.5f });
+                { 0.25f, 0.5f, 0.0f, 0.25f,  0.0f, 0.25f, 0.0f, 0.25f,  0.0f, 0.25f, 0.25f, 0.5f });
+            BlockId stoneBlockId = _blockRegistry->RegisterBlock({ "Stone Block" }, { 0.25f, 0.5f, 0.25f, 0.5f });
+            BlockId glowstoneId = _blockRegistry->RegisterBlock({ "Glowstone", false, 0, true, 15 }, { 0.5f, 0.75f, 0.0f, 0.25f });
+            BlockId logId = _blockRegistry->RegisterBlock({ "Log" }, { 0.75f, 1.0f, 0.25f, 0.5f, 0.75f, 1.0f, 0.25f, 0.5f, 0.75f, 1.0f, 0.0f, 0.25f });
+            BlockId leavesId = _blockRegistry->RegisterBlock({ "Leaves", true, 4 }, { 0.5f, 0.75f, 0.25f, 0.5f });
+            BlockId grassId = _blockRegistry->RegisterBlock({ "Grass", true }, { 0.0f, 0.25f, 0.5f, 0.75f, true });
+            BlockId dandelionId = _blockRegistry->RegisterBlock({ "Dandelion", true }, { 0.25f, 0.5f, 0.5f, 0.75f, true });
+            BlockId poppyId = _blockRegistry->RegisterBlock({ "Poppy", true }, { 0.5f, 0.75f, 0.5f, 0.75f, true });
+            BlockId blueOrchidId = _blockRegistry->RegisterBlock({ "Blue Orchid", true }, { 0.75f, 1.0f, 0.5f, 0.75f, true });
+            BlockId tallGrassBottomId = _blockRegistry->RegisterBlock({ "Tall Grass Bottom", true }, { 0.0f, 0.25f, 0.75f, 1.0f, true });
+            BlockId tallGrassTopId = _blockRegistry->RegisterBlock({ "Tall Grass Top", true }, { 0.25f, 0.5f, 0.75f, 1.0f, true });
 
             _selectedBlock = glowstoneId;
 
@@ -45,9 +53,154 @@ namespace ScuffedMinecraft
 
             Input::SetMouseMode(MouseMode::DISABLED);
 
+            // Create world gen
+            _worldGen = std::make_shared<WorldGen>(
+                0.0f, 10.0f, 100.0f, 2, 0.3f, 4.0f,
+                30.0f, 2, 0.25f, 3.0f, 0.8f,
+                std::vector<WorldFeature>{ 
+                WorldFeature{
+                    .layers = {
+                        {
+                            { AIR, AIR, AIR, AIR, AIR },
+                            { AIR, AIR, AIR, AIR, AIR },
+                            { AIR, AIR, dirtBlockId, AIR, AIR },
+                            { AIR, AIR, AIR, AIR, AIR },
+                            { AIR, AIR, AIR, AIR, AIR },
+                        },
+                        {
+                            { AIR, AIR, AIR, AIR, AIR },
+                            { AIR, AIR, AIR, AIR, AIR },
+                            { AIR, AIR, logId, AIR, AIR },
+                            { AIR, AIR, AIR, AIR, AIR },
+                            { AIR, AIR, AIR, AIR, AIR },
+                        },
+                        {
+                            { AIR, AIR, AIR, AIR, AIR },
+                            { AIR, AIR, AIR, AIR, AIR },
+                            { AIR, AIR, logId, AIR, AIR },
+                            { AIR, AIR, AIR, AIR, AIR },
+                            { AIR, AIR, AIR, AIR, AIR },
+                        },
+                        {
+                            { AIR, leavesId, leavesId, leavesId, AIR },
+                            { leavesId, leavesId, leavesId, leavesId, leavesId },
+                            { leavesId, leavesId, logId, leavesId, leavesId },
+                            { leavesId, leavesId, leavesId, leavesId, leavesId },
+                            { AIR, leavesId, leavesId, leavesId, AIR },
+                        },
+                        {
+                            { AIR, leavesId, leavesId, leavesId, AIR },
+                            { leavesId, leavesId, leavesId, leavesId, leavesId },
+                            { leavesId, leavesId, logId, leavesId, leavesId },
+                            { leavesId, leavesId, leavesId, leavesId, leavesId },
+                            { AIR, leavesId, leavesId, leavesId, AIR },
+                        },
+                        {
+                            { AIR, AIR, AIR, AIR, AIR },
+                            { AIR, leavesId, leavesId, leavesId, AIR },
+                            { AIR, leavesId, logId, leavesId, AIR },
+                            { AIR, leavesId, leavesId, leavesId, AIR },
+                            { AIR, AIR, AIR, AIR, AIR },
+                        },
+                        {
+                            { AIR, AIR,      AIR,      AIR,      AIR },
+                            { AIR, AIR,      leavesId, AIR,      AIR },
+                            { AIR, leavesId, leavesId, leavesId, AIR },
+                            { AIR, AIR,      leavesId, AIR,      AIR },
+                            { AIR, AIR,      AIR,      AIR,      AIR },
+                        }
+                    },
+                    .replace = {
+                        {
+                            { false, false, false, false, false },
+                            { false, false, false, false, false },
+                            { false, false, true, false, false },
+                            { false, false, false, false, false },
+                            { false, false, false, false, false },
+                        },
+                        {
+                            { false, false, false, false, false },
+                            { false, false, false, false, false },
+                            { false, false, true, false, false },
+                            { false, false, false, false, false },
+                            { false, false, false, false, false },
+                        },
+                        {
+                            { false, false, false, false, false },
+                            { false, false, false, false, false },
+                            { false, false, true, false, false },
+                            { false, false, false, false, false },
+                            { false, false, false, false, false },
+                        },
+                        {
+                            { false, false, false, false, false },
+                            { false, false, false, false, false },
+                            { false, false, true, false, false },
+                            { false, false, false, false, false },
+                            { false, false, false, false, false },
+                        },
+                        {
+                            { false, false, false, false, false },
+                            { false, false, false, false, false },
+                            { false, false, true, false, false },
+                            { false, false, false, false, false },
+                            { false, false, false, false, false },
+                        },
+                        {
+                            { false, false, false, false, false },
+                            { false, false, false, false, false },
+                            { false, false, true, false, false },
+                            { false, false, false, false, false },
+                            { false, false, false, false, false },
+                        },
+                        {
+                            { false, false, false, false, false },
+                            { false, false, false, false, false },
+                            { false, false, false, false, false },
+                            { false, false, false, false, false },
+                            { false, false, false, false, false },
+                        }
+                    },
+                    .center = { -2, 0, -2 },
+                    .placementChance = 0.01f },
+
+                WorldFeature{
+                    .layers = { { { grassId } } },
+                    .replace = { { { false } } },
+                    .center = { 0, 1, 0 },
+                    .placementChance = 0.1f
+                },
+                WorldFeature{
+                   .layers = { { { dandelionId } } },
+                   .replace = { { { false } } },
+                   .center = { 0, 1, 0 },
+                   .placementChance = 0.01f
+                },
+                WorldFeature{
+                   .layers = { { { poppyId } } },
+                   .replace = { { { false } } },
+                   .center = { 0, 1, 0 },
+                   .placementChance = 0.01f
+                },
+                WorldFeature{
+                   .layers = { { { blueOrchidId } } },
+                   .replace = { { { false } } },
+                   .center = { 0, 1, 0 },
+                   .placementChance = 0.01f
+                },
+                WorldFeature{
+                   .layers = { { { tallGrassBottomId } },
+                                { { tallGrassTopId } } },
+                   .replace = { { { false } },
+                                { { false } } },
+                   .center = { 0, 1, 0 },
+                   .placementChance = 0.01f
+                }
+            });
+
             // Create chunk manager
             LOG_INFO("Physical CPU Cores: %d", cpu_count());
-            _chunkManager = std::make_unique<ChunkManager>(_shader.get(), _camera.get(), std::max(1, (int)cpu_count() - 2));
+            _chunkManager = std::make_unique<ChunkManager>(_shader.get(), _camera.get(), std::max(1, (int)cpu_count() - 2), _worldGen);
             _chunkManager->SetRenderDistance(_renderDistance, _renderHeight);
 
             _start = std::chrono::steady_clock::now();
@@ -224,6 +377,7 @@ namespace ScuffedMinecraft
     private:
         std::unique_ptr<Shader> _shader;
         std::unique_ptr<Camera> _camera;
+        std::shared_ptr<WorldGen> _worldGen;
         std::unique_ptr<ChunkManager> _chunkManager;
         BlockRegistry* _blockRegistry;
 

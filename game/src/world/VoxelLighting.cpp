@@ -69,6 +69,22 @@ namespace ScuffedMinecraft
 			static constexpr bool straightDown = true;
 		};
 
+		static inline bool BlocksLight(BlockId block)
+		{
+			if (block == AIR) return false;
+
+			const auto registry = BlockRegistry::GetInstance();
+			return !registry->GetBlock(block)->transparent;
+		}
+
+		static inline int GetLightBlocked(BlockId block)
+		{
+			if (block == AIR) return 0;
+
+			const auto registry = BlockRegistry::GetInstance();
+			return registry->GetBlock(block)->lightBlocked;
+		}
+
 		template <class T>
 		int Incoming(int from, Direction d)
 		{
@@ -103,7 +119,7 @@ namespace ScuffedMinecraft
 			{
 				auto node = queue.front();
 				queue.pop();
-				if (!chunksTouched[node.chunk] || !chunksTouched[node.chunk]->data) continue;
+				if (!chunksTouched[node.chunk] || !chunksTouched[node.chunk]->data || chunksTouched[node.chunk]->stage < ChunkStage::TerrainFeatures) continue;
 				ChunkData* data = chunksTouched[node.chunk]->data.get();
 
 				int level = T::Get(*data, node.index);
@@ -117,16 +133,16 @@ namespace ScuffedMinecraft
 
 					glm::ivec3 nPos = pos;
 					uint16_t nChunk = Step(chunkManager, chunksTouched, node.chunk, data, nPos, Direction(d));
-					if (!chunksTouched[nChunk] || !chunksTouched[nChunk]->data) continue;
+					if (!chunksTouched[nChunk] || !chunksTouched[nChunk]->data || chunksTouched[nChunk]->stage < ChunkStage::TerrainFeatures) continue;
 					ChunkData* nData = chunksTouched[nChunk]->data.get();
 
 					int nBlockIndex = ChunkData::Index(nPos.x, nPos.y, nPos.z);
 					BlockId nBlock = nData->GetBlock(nBlockIndex);
 
-					if (nBlock != AIR) continue;
+					if (BlocksLight(nBlock)) continue;
 
 					int nLevel = T::Get(*nData, nBlockIndex);
-					int incoming = Incoming<T>(level, Direction(d));
+					int incoming = Incoming<T>(level, Direction(d)) - GetLightBlocked(nBlock);
 					if (incoming > nLevel)
 					{
 						T::Set(*nData, nBlockIndex, incoming);
@@ -144,7 +160,7 @@ namespace ScuffedMinecraft
 			{
 				auto node = queue.front();
 				queue.pop();
-				if (!chunksTouched[node.chunk] || !chunksTouched[node.chunk]->data) continue;
+				if (!chunksTouched[node.chunk] || !chunksTouched[node.chunk]->data || chunksTouched[node.chunk]->stage < ChunkStage::TerrainFeatures) continue;
 				ChunkData* data = chunksTouched[node.chunk]->data.get();
 
 				int index = node.Index();
@@ -159,7 +175,7 @@ namespace ScuffedMinecraft
 
 					glm::ivec3 nPos = pos;
 					uint16_t nChunk = Step(chunkManager, chunksTouched, node.chunk, data, nPos, Direction(d));
-					if (!chunksTouched[nChunk] || !chunksTouched[nChunk]->data) continue;
+					if (!chunksTouched[nChunk] || !chunksTouched[nChunk]->data || chunksTouched[nChunk]->stage < ChunkStage::TerrainFeatures) continue;
 					ChunkData* nData = chunksTouched[nChunk]->data.get();
 
 					int nBlockIndex = ChunkData::Index(nPos.x, nPos.y, nPos.z);
@@ -167,7 +183,7 @@ namespace ScuffedMinecraft
 					if (nLevel == 0) continue;
 
 					BlockId nBlock = nData->GetBlock(nBlockIndex);
-					if (nBlock == AIR && (nLevel < level || (T::straightDown && d == NEG_Y && level == 15 && nLevel == 15)))
+					if (!BlocksLight(nBlock) && (nLevel < level || (T::straightDown && d == NEG_Y && level == 15 && nLevel == 15)))
 					{
 						T::Set(*nData, nBlockIndex, 0);
 						queue.emplace(nBlockIndex, nLevel, nChunk, PropAllButOneDir(Opposite((Direction(d)))));
